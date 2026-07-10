@@ -1647,6 +1647,7 @@ export async function processIssue(
       // the AgentOutput emit clause; others keep the text-sentinel-only protocol.
       systemPrompt: exitProtocolFor({
         runMode: input.runMode,
+        runner: activeRunner,
         structuredOutput: runnerSupportsStructuredOutput(toAgentRunner(activeRunner)),
       }),
       branch,
@@ -1775,6 +1776,7 @@ export async function processIssue(
         handoffContent: currentHandoff,
         systemPrompt: exitProtocolFor({
           runMode: input.runMode,
+          runner: other,
           structuredOutput: runnerSupportsStructuredOutput(toAgentRunner(other)),
         }),
         branch,
