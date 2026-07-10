@@ -20,4 +20,11 @@ describe("cli parser", () => {
     });
     expect(parseCli(["triage", "99", "--summon"])).toEqual({ command: "triage", args: ["99", "--summon"] });
   });
+
+  it("routes rsp-instructions for SessionStart hook injection", () => {
+    expect(parseCli(["rsp-instructions", "--runner", "codex", "--hook"])).toEqual({
+      command: "rsp-instructions",
+      args: ["--runner", "codex", "--hook"],
+    });
+  });
 });
