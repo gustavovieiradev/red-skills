@@ -6,6 +6,7 @@ import { resolveRspConfig } from "./config.js";
 import { runGitWrapper } from "./git-wrapper.js";
 import { runGhWrapper } from "./gh-wrapper.js";
 import { runTestWrapper } from "./test-wrapper.js";
+import { renderRspInstructions, type RspInstructionRunner } from "./instructions.js";
 
 interface ParsedArgs {
   command?: string;
@@ -17,6 +18,12 @@ interface ParsedArgs {
 
 async function main(argv = process.argv.slice(2)): Promise<number> {
   const args = parseArgs(argv);
+  if (args.command === "instructions") {
+    const runner = parseInstructionRunner(args.positional);
+    process.stdout.write(renderRspInstructions({ runner }));
+    return 0;
+  }
+
   const config = resolveRspConfig(process.cwd(), process.env, args.storeUri);
   if (!args.storeUri && config.storeUri.startsWith("file://") && !existsSync(fileURLToPath(config.storeUri))) {
     process.stdout.write("error: rsp repo store is not provisioned - run /setup-red-skills\n");
@@ -113,6 +120,12 @@ function renderStats(stats: { records: number; bytes: number; oldest: string | n
     `budget: ${stats.budget}`,
     "",
   ].join("\n");
+}
+
+function parseInstructionRunner(args: readonly string[]): RspInstructionRunner {
+  const index = args.indexOf("--runner");
+  const runner = index >= 0 ? args[index + 1] : undefined;
+  return runner === "claude" ? "claude" : "codex";
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
