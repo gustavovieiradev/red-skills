@@ -11,6 +11,7 @@ import {
   SCOUT_EXIT_PROTOCOL,
   AGENT_OUTPUT_INSTRUCTION,
   exitProtocolFor,
+  rspInstructionRunner,
   UNTRUSTED_PAYLOAD_NOTICE,
   type HandoffComment,
 } from "../src/core/handoff.js";
@@ -390,6 +391,27 @@ describe("buildHandoff", () => {
 
   it("exitProtocolFor: scout mode always wins over structured output", () => {
     expect(exitProtocolFor({ runMode: "scout", structuredOutput: true })).toBe(SCOUT_EXIT_PROTOCOL);
+  });
+
+  it("exitProtocolFor adds generated rsp guidance for Codex without interception claims", () => {
+    const p = exitProtocolFor({ runner: "codex", structuredOutput: false });
+    expect(p).toContain("rsp wrapper guidance");
+    expect(p).toContain("rsp git <status|log|diff|commit|push>");
+    expect(p).toContain("rsp show el:<id>");
+    expect(p.toLowerCase()).not.toContain("intercept");
+  });
+
+  it("exitProtocolFor adds generated rsp guidance for Claude and marks interception present", () => {
+    const p = exitProtocolFor({ runner: "claude", structuredOutput: true });
+    expect(p).toContain("rsp wrapper guidance");
+    expect(p).toContain("pre-execution interception");
+    expect(p).toContain("direct calls are still preferred");
+    expect(p).toContain("<agent-output>");
+  });
+
+  it("maps claude-minimax to the Claude rsp instruction lane and leaves other runners alone", () => {
+    expect(rspInstructionRunner("claude-minimax")).toBe("claude");
+    expect(rspInstructionRunner("opencode")).toBeUndefined();
   });
 
   it("case5: malformed envelope → no previous-attempts, no human-guidance, surfaces in discussion", () => {
