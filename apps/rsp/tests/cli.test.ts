@@ -120,4 +120,19 @@ describe("rsp cli", () => {
     expect(res.stdout).toEqual(Buffer.from("expired 2026-07-11T12:00:00.000Z — re-run: rerun me\n"));
     expect(res.stderr).toEqual(Buffer.alloc(0));
   });
+
+  it("rsp instructions prints runner-specific ambient guidance without opening the repo store", async () => {
+    const root = await tempRoot();
+    await mkdir(join(root, ".red"), { recursive: true });
+
+    const codex = runRspFromCwd(root, ["instructions", "--runner", "codex"], {});
+    const claude = runRspFromCwd(root, ["instructions", "--runner", "claude"], {});
+
+    expect(codex.status).toBe(0);
+    expect(codex.stdout.toString("utf8")).toContain("rsp git <status|log|diff|commit|push>");
+    expect(codex.stdout.toString("utf8").toLowerCase()).not.toContain("intercept");
+    expect(claude.status).toBe(0);
+    expect(claude.stdout.toString("utf8").toLowerCase()).toContain("interception");
+    await expect(stat(join(root, ".red", "red.rdb"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });
