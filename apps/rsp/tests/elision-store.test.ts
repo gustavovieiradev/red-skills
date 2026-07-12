@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -72,29 +72,16 @@ describe("RspElisionStore", () => {
     }
   });
 
-  it("opens and writes without a RedDB subprocess", async () => {
+  it("refuses to squat a legacy .red/red.rdb store", async () => {
     const root = await tempRoot();
-    const previous = process.env.REDDB_BIN;
-    process.env.REDDB_BIN = join(root, "missing-red-binary");
-    try {
-      const store = await RspElisionStore.open({
-        uri: `file://${join(root, "red.rdb")}`,
-        now: () => new Date("2026-07-10T12:00:00.000Z"),
-      });
-      try {
-        const handle = await store.mint(Buffer.from("fast local write"), {
-          command: "git log --terse",
-          loss: { level: "terse", bytes_elided: 16 },
-        });
+    const legacyPath = join(root, "red.rdb");
+    const legacyBytes = Buffer.concat([Buffer.from("RDBSBLK1"), Buffer.from("legacy")]);
+    await writeFile(legacyPath, legacyBytes);
 
-        expect((await store.get(handle))?.original).toEqual(Buffer.from("fast local write"));
-      } finally {
-        await store.close();
-      }
-    } finally {
-      if (previous === undefined) delete process.env.REDDB_BIN;
-      else process.env.REDDB_BIN = previous;
-    }
+    await expect(RspElisionStore.open({ uri: `file://${legacyPath}` })).rejects.toThrow(
+      "refusing to open legacy .red/red.rdb",
+    );
+    await expect(readFile(legacyPath)).resolves.toEqual(legacyBytes);
   });
 
   it("expires records by TTL on amortized write and reports the original command", async () => {
