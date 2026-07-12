@@ -67,6 +67,16 @@ export {
   type ResolveBundleInput,
 } from "./bundle-fetch.js";
 export {
+  REPO_REDB_DAEMON_LOCK,
+  REPO_REDB_DAEMON_STATE,
+  REPO_REDB_STORE_PATH,
+  ensureRepoRedDaemon,
+  fileExists,
+  isRepoRedStorePath,
+  resolveRepoRedStorePath,
+  type RepoRedDaemonInfo,
+} from "./repo-red-daemon.js";
+export {
   REDDB_REPO,
   RED_RELEASE_BASE,
   RED_RUNTIME_DIR,
