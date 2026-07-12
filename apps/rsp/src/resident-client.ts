@@ -93,6 +93,7 @@ export async function ensureResidentServer(paths: RspResidentPaths, config: RspR
   if (lock) {
     try {
       if (await ping(paths.socketPath)) return;
+      await removeUnresponsiveSocket(paths.socketPath);
       const child = spawnResident(paths, config);
       await waitForServer(paths.socketPath, child);
       return;
@@ -125,6 +126,10 @@ async function waitForServer(socketPath: string, child?: ChildProcess): Promise<
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw last instanceof Error ? last : new Error("resident rsp server did not start");
+}
+
+async function removeUnresponsiveSocket(socketPath: string): Promise<void> {
+  await rm(socketPath, { force: true });
 }
 
 async function tryAcquireLock(lockPath: string) {
