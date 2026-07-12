@@ -1,5 +1,6 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { REPO_REDB_STORE_PATH } from "@reddb-io/shared/repo-red-daemon.js";
 import type { AiProviderConfig } from "./extract-conversation.js";
 import type { RecallRankingConfig } from "./recall-ranking.js";
 import { mergeMemoryBlock, parsePluginsMemory } from "./shared-config.js";
@@ -171,11 +172,11 @@ export function skillTelemetryEnabled(config: MemoryConfig): boolean {
 /** Default location for markdown notes, under the single global `.red/`. */
 export const DEFAULT_NOTES_DIR = ".red/memory/notes";
 
-/** Default location for the per-project RedDB graph store, under `.red/`. */
-export const DEFAULT_STORE_PATH = ".red/memory/graph.rdb";
+/** Default location for the shared repo RedDB store, under `.red/tmp/`. */
+export const DEFAULT_STORE_PATH = REPO_REDB_STORE_PATH;
 
 /** Shared Repo store provisioned by `/red-setup` for all RedDB-backed plugins. */
-export const REPO_STORE_PATH = ".red/red.rdb";
+export const REPO_STORE_PATH = REPO_REDB_STORE_PATH;
 
 /**
  * Absolute path to the unified config file for a given repo root (ADR 0042).
