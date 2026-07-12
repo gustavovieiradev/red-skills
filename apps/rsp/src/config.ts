@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { REPO_REDB_STORE_PATH } from "@reddb-io/shared/repo-red-daemon.js";
 import { DEFAULT_RSP_BYTE_BUDGET, DEFAULT_RSP_TTL_DAYS } from "./elision-store.js";
 
 export const DEFAULT_RSP_HEAVY_GIT_BYTE_THRESHOLD = 8 * 1024;
@@ -23,7 +24,7 @@ export function resolveRspConfig(cwd: string, env: NodeJS.ProcessEnv, explicitSt
     numericEnv(env.RSP_HEAVY_GIT_BYTE_THRESHOLD) ?? readNumericYamlPath(yaml, "rsp.heavyGitByteThreshold"),
     DEFAULT_RSP_HEAVY_GIT_BYTE_THRESHOLD,
   );
-  const storeUri = explicitStoreUri ?? env.RSP_STORE_URI ?? `file://${join(resolve(root), ".red", "tmp", "rsp-elisions.json")}`;
+  const storeUri = explicitStoreUri ?? env.RSP_STORE_URI ?? `file://${join(resolve(root), REPO_REDB_STORE_PATH)}`;
 
   return { enabled, storeUri, ttlDays, byteBudget, heavyGitByteThreshold };
 }
