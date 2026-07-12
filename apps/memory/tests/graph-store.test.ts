@@ -866,7 +866,7 @@ describe("init graph mode + round-trip", () => {
       // (omitted) but still resolves, and the store file was provisioned.
       expect(result.configPath.endsWith("/.red/config.yaml")).toBe(true);
       const storePath = result.storeUri.replace(/^file:\/\//, "");
-      expect(storePath.endsWith("/.red/memory/graph.rdb")).toBe(true);
+      expect(storePath.endsWith("/.red/tmp/red-skills.rdb")).toBe(true);
       expect(existsSync(storePath)).toBe(true);
     },
     TIMEOUT,
