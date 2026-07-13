@@ -179,13 +179,17 @@ export async function resolveStatuslineRsp(root: string, env: NodeJS.ProcessEnv 
   const nowMs = Date.now();
   const summaryFreshMs = Math.max(RSP_MIN_SUMMARY_FRESH_MS, config.telemetryDrainIntervalMs * 3);
   const summary = parseRspSummary(paths.summaryPath);
+  let staleSummary: RspStatusInput | undefined;
   if (summary) {
     const updatedAtMs = Date.parse(summary.updated_at);
+    const ready: RspStatusInput = { state: "ready", tokensSavedToday: Math.max(0, Math.floor(summary.tokens_saved_today)) };
     if (Number.isFinite(updatedAtMs) && nowMs - updatedAtMs <= summaryFreshMs) {
-      return { state: "ready", tokensSavedToday: Math.max(0, Math.floor(summary.tokens_saved_today)) };
+      return ready;
     }
+    if (Number.isFinite(updatedAtMs)) staleSummary = ready;
   }
   if (isRecentFile(paths.wakeLockPath, nowMs, RSP_WARMUP_GRACE_MS)) return { state: "warming" };
+  if (staleSummary) return staleSummary;
   return { state: "error" };
 }
 
