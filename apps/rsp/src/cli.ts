@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { existsSync, readdirSync } from "node:fs";
+import { encode, type JsonObject } from "@reddb-io/toon";
 import type { RspElisionStore } from "./elision-store.js";
 import type { ResidentResponseMetrics } from "./resident-client.js";
-import type { RspTelemetryStats } from "./telemetry.js";
+import type { RspTelemetryGainsReport, RspTelemetryStats } from "./telemetry.js";
 
 interface ParsedArgs {
   command?: string;
@@ -126,9 +127,21 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
       closeStore = () => store.close();
       const stats = await store.stats();
       const telemetry = hasTelemetryStats(store)
-        ? await store.telemetryStats(statsSinceDays(args.positional))
-        : emptyTelemetryStats(statsSinceDays(args.positional));
+        ? await store.telemetryStats(sinceDays(args.positional, 30))
+        : emptyTelemetryStats(sinceDays(args.positional, 30));
       process.stdout.write(renderStats(stats, telemetry, statsFull(args.positional)));
+      return 0;
+    }
+
+    if (args.command === "gains") {
+      const store = await openReadStore();
+      closeStore = () => store.close();
+      if (!hasTelemetryGains(store)) {
+        process.stdout.write("error: rsp gains requires the shared RedDB store\n");
+        return 1;
+      }
+      const report = await store.telemetryGains(sinceDays(args.positional, 28));
+      process.stdout.write(renderGainsReportToon(report));
       return 0;
     }
 
@@ -266,11 +279,22 @@ type TelemetryStatsStore = {
   telemetryStats: (sinceDays: number) => Promise<RspTelemetryStats>;
 };
 
+type TelemetryGainsStore = {
+  telemetryGains: (sinceDays: number) => Promise<RspTelemetryGainsReport>;
+};
+
 function hasTelemetryStats(store: unknown): store is TelemetryStatsStore {
   return typeof store === "object" &&
     store !== null &&
     "telemetryStats" in store &&
     typeof (store as { telemetryStats?: unknown }).telemetryStats === "function";
+}
+
+function hasTelemetryGains(store: unknown): store is TelemetryGainsStore {
+  return typeof store === "object" &&
+    store !== null &&
+    "telemetryGains" in store &&
+    typeof (store as { telemetryGains?: unknown }).telemetryGains === "function";
 }
 
 interface WrappedCommandResult {
@@ -438,13 +462,13 @@ function parseArgs(argv: string[]): ParsedArgs {
   return out;
 }
 
-function statsSinceDays(args: readonly string[]): number {
+function sinceDays(args: readonly string[], fallback: number): number {
   const raw = valueAfter(args, "--since") ?? args.find((arg) => arg.startsWith("--since="))?.slice("--since=".length);
-  if (!raw) return 30;
+  if (!raw) return fallback;
   const match = /^(\d+)(d)?$/.exec(raw);
-  if (!match) return 30;
+  if (!match) return fallback;
   const days = Number(match[1]);
-  return Number.isFinite(days) && days > 0 ? days : 30;
+  return Number.isFinite(days) && days > 0 ? days : fallback;
 }
 
 function statsFull(args: readonly string[]): boolean {
@@ -494,6 +518,10 @@ function renderStats(
     `  store_elapsed_ms_avg: ${formatNullable(telemetry.latency.store_elapsed_ms_avg)}`,
     "",
   ].join("\n");
+}
+
+function renderGainsReportToon(report: RspTelemetryGainsReport): string {
+  return `${encode(report as unknown as JsonObject)}\n`;
 }
 
 function renderDaily(series: Array<{ date: string; tokens_saved: number }>): string[] {
