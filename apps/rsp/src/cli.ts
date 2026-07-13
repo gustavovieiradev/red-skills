@@ -9,6 +9,8 @@ import { formatUsd } from "./pricing.js";
 import type { ResidentResponseMetrics } from "./resident-client.js";
 import type { RspTelemetryGainsReport, RspTelemetryStats } from "./telemetry.js";
 
+const TELEMETRY_NUDGE_BYTE_THRESHOLD = 64 * 1024;
+
 interface ParsedArgs {
   command?: string;
   handle?: string;
@@ -63,7 +65,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     : null;
   if (fastResidentPaths) {
     const started = process.hrtime.bigint();
-    return await emitWrappedResult(args, await runFastGitStatus(), started, undefined, fastResidentPaths.rootDir);
+    return await emitWrappedResult(args, await runFastGitStatus(), started, undefined, fastResidentPaths.rootDir, {
+      config,
+      clientVersion: buildInfo.version,
+    });
   }
   const { resolveResidentPaths, ResidentRspElisionStore, ensureResidentServer } = await import("./resident-client.js");
   if (args.command === "server") {
@@ -191,7 +196,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
       }
       if (isFastGitStatus(args.positional)) {
         const started = process.hrtime.bigint();
-        return await emitWrappedResult(args, await runFastGitStatus(), started, undefined, residentPaths.rootDir);
+        return await emitWrappedResult(args, await runFastGitStatus(), started, undefined, residentPaths.rootDir, {
+          config,
+          clientVersion: buildInfo.version,
+        });
       }
       const { runGitWrapper } = await import("./git-wrapper.js");
       const store = new LazyRspElisionStore(() => suppressRspStderr(openResidentStore));
@@ -202,7 +210,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
         store,
         heavyGitByteThreshold: config.heavyGitByteThreshold,
       }));
-      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir);
+      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir, {
+        config,
+        clientVersion: buildInfo.version,
+      });
     }
 
     if (args.command === "gh") {
@@ -216,7 +227,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
       closeStore = () => store.close();
       const started = process.hrtime.bigint();
       const result = await suppressRspStderr(() => runGhWrapper(args.positional, { level: args.level, store }));
-      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir);
+      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir, {
+        config,
+        clientVersion: buildInfo.version,
+      });
     }
 
     if (args.command === "vitest" || args.command === "cargo") {
@@ -230,7 +244,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
       closeStore = () => store.close();
       const started = process.hrtime.bigint();
       const result = await suppressRspStderr(() => runTestWrapper(args.positional, { level: args.level, store }));
-      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir);
+      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir, {
+        config,
+        clientVersion: buildInfo.version,
+      });
     }
 
     if (args.command === "cat") {
@@ -248,7 +265,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
         store,
         heavyByteThreshold: config.heavyGitByteThreshold,
       }));
-      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir);
+      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir, {
+        config,
+        clientVersion: buildInfo.version,
+      });
     }
 
     if (args.command === "exec") {
@@ -266,7 +286,10 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
         store,
         heavyByteThreshold: config.heavyGitByteThreshold,
       }));
-      return await emitWrappedResult(args, result, started, store);
+      return await emitWrappedResult(args, result, started, store, residentPaths.rootDir, {
+        config,
+        clientVersion: buildInfo.version,
+      });
     }
 
     if (args.command === "show" && args.handle) {
@@ -407,6 +430,11 @@ interface WrappedCommandResult {
   rawOutput?: Buffer;
 }
 
+interface TelemetryDrainNudge {
+  config: RspRuntimeConfig;
+  clientVersion: string;
+}
+
 class LazyRspElisionStore implements ElisionStoreLike {
   private store?: Promise<ElisionStoreLike>;
   private metrics?: ResidentResponseMetrics;
@@ -455,7 +483,7 @@ class ColdRspElisionStore implements ElisionStoreLike {
 
 async function runColdWrappedCommand(
   args: ParsedArgs,
-  config: Pick<RspRuntimeConfig, "heavyGitByteThreshold">,
+  config: RspRuntimeConfig,
   telemetryRoot: string,
   err?: unknown,
 ): Promise<number> {
@@ -468,7 +496,10 @@ async function runColdWrappedCommand(
   try {
     if (args.command === "git") {
       if (isFastGitStatus(args.positional)) {
-        return await emitWrappedResult(args, await runFastGitStatus(), started, store, telemetryRoot);
+        return await emitWrappedResult(args, await runFastGitStatus(), started, store, telemetryRoot, {
+          config,
+          clientVersion: readBuildInfo("rsp").version,
+        });
       }
       const { runGitWrapper } = await import("./git-wrapper.js");
       const result = await runGitWrapper(args.positional, {
@@ -476,19 +507,28 @@ async function runColdWrappedCommand(
         store,
         heavyGitByteThreshold: config.heavyGitByteThreshold,
       });
-      return await emitWrappedResult(args, result, started, store, telemetryRoot);
+      return await emitWrappedResult(args, result, started, store, telemetryRoot, {
+        config,
+        clientVersion: readBuildInfo("rsp").version,
+      });
     }
 
     if (args.command === "gh") {
       const { runGhWrapper } = await import("./gh-wrapper.js");
       const result = await runGhWrapper(args.positional, { level: args.level, store });
-      return await emitWrappedResult(args, result, started, store, telemetryRoot);
+      return await emitWrappedResult(args, result, started, store, telemetryRoot, {
+        config,
+        clientVersion: readBuildInfo("rsp").version,
+      });
     }
 
     if (args.command === "vitest" || args.command === "cargo") {
       const { runTestWrapper } = await import("./test-wrapper.js");
       const result = await runTestWrapper(args.positional, { level: args.level, store });
-      return await emitWrappedResult(args, result, started, store, telemetryRoot);
+      return await emitWrappedResult(args, result, started, store, telemetryRoot, {
+        config,
+        clientVersion: readBuildInfo("rsp").version,
+      });
     }
 
     if (args.command === "cat") {
@@ -498,7 +538,10 @@ async function runColdWrappedCommand(
         store,
         heavyByteThreshold: config.heavyGitByteThreshold,
       });
-      return await emitWrappedResult(args, result, started, store, telemetryRoot);
+      return await emitWrappedResult(args, result, started, store, telemetryRoot, {
+        config,
+        clientVersion: readBuildInfo("rsp").version,
+      });
     }
 
     if (args.command === "exec") {
@@ -508,7 +551,10 @@ async function runColdWrappedCommand(
         store,
         heavyByteThreshold: config.heavyGitByteThreshold,
       });
-      return await emitWrappedResult(args, result, started, store);
+      return await emitWrappedResult(args, result, started, store, telemetryRoot, {
+        config,
+        clientVersion: readBuildInfo("rsp").version,
+      });
     }
   } catch (coldErr) {
     return await degradeToPassthrough("wrapper failed", args.positional, coldErr, telemetryRoot);
@@ -525,6 +571,7 @@ async function emitWrappedResult(
   started: bigint,
   store?: InvocationTelemetryStore,
   telemetryRoot = process.cwd(),
+  nudge?: TelemetryDrainNudge,
 ): Promise<number> {
   process.stdout.write(result.stdout);
   process.stderr.write(result.stderr);
@@ -534,6 +581,7 @@ async function emitWrappedResult(
   } else {
     appendFastInvocationTelemetry(telemetryRoot, args, result, wrapperMs);
   }
+  if (nudge) await nudgeTelemetryDrain(telemetryRoot, nudge);
   if (result.signal) {
     process.kill(process.pid, result.signal);
     return 128;
@@ -566,6 +614,29 @@ async function appendInvocationTelemetry(
     store_open_count: metrics?.storeOpenCount,
     store_elapsed_ms: metrics?.storeElapsedMs,
   });
+}
+
+async function nudgeTelemetryDrain(telemetryRoot: string, nudge: TelemetryDrainNudge): Promise<void> {
+  try {
+    const { shouldNudgeTelemetryDrain } = await import("./telemetry.js");
+    if (!shouldNudgeTelemetryDrain(telemetryRoot, {
+      maxPendingAgeMs: nudge.config.telemetryDrainIntervalMs * 2,
+      byteThreshold: TELEMETRY_NUDGE_BYTE_THRESHOLD,
+    })) return;
+
+    const { kickResidentServer, resolveResidentPaths } = await import("./resident-client.js");
+    await kickResidentServer(resolveResidentPaths(telemetryRoot), {
+      storeUri: nudge.config.storeUri,
+      ttlDays: nudge.config.ttlDays,
+      byteBudget: nudge.config.byteBudget,
+      telemetryTtlDays: nudge.config.telemetryTtlDays,
+      telemetryByteBudget: nudge.config.telemetryByteBudget,
+      telemetryDrainIntervalMs: nudge.config.telemetryDrainIntervalMs,
+      telemetryDrainTimeoutMs: nudge.config.telemetryDrainTimeoutMs,
+      idleMs: nudge.config.idleMs,
+      clientVersion: nudge.clientVersion,
+    });
+  } catch {}
 }
 
 function appendFastInvocationTelemetry(
