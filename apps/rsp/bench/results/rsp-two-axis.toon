@@ -37,6 +37,15 @@ filters[7]:
       p90_delta_pct: 82.4
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 478
+      rsp_brief_tokens: 202
+      rsp_terse_tokens: 204
+      rtk_tokens: 132
+      headroom_tokens: 88
+      rsp_brief_pct_of_headroom: 43.6
+      rsp_terse_pct_of_headroom: 43.1
+      rtk_pct_of_headroom: 66.7
     hypothetical_active:
       brief:
         median_delta_pct: 61.9
@@ -71,6 +80,15 @@ filters[7]:
       p90_delta_pct: -78.8
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 33
+      rsp_brief_tokens: 33
+      rsp_terse_tokens: 33
+      rtk_tokens: 59
+      headroom_tokens: 6
+      rsp_brief_pct_of_headroom: 18.2
+      rsp_terse_pct_of_headroom: 18.2
+      rtk_pct_of_headroom: 10.2
     hypothetical_active:
       brief:
         median_delta_pct: 42.4
@@ -105,11 +123,20 @@ filters[7]:
       p90_delta_pct: 99.6
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 7526
+      rsp_brief_tokens: 7526
+      rsp_terse_tokens: 7526
+      rtk_tokens: 62
+      headroom_tokens: 28
+      rsp_brief_pct_of_headroom: 0.4
+      rsp_terse_pct_of_headroom: 0.4
+      rtk_pct_of_headroom: 45.2
     hypothetical_active:
       brief:
-        median_delta_pct: -56
-        p90_delta_pct: -0.4
-        fidelity_pass_rate_pct: 100
+        median_delta_pct: -6.2
+        p90_delta_pct: 99.1
+        fidelity_pass_rate_pct: 50
         source: measured
       terse:
         median_delta_pct: -21.6
@@ -139,11 +166,20 @@ filters[7]:
       p90_delta_pct: 99.3
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 4467
+      rsp_brief_tokens: 4467
+      rsp_terse_tokens: 4467
+      rtk_tokens: 68
+      headroom_tokens: 52
+      rsp_brief_pct_of_headroom: 1.2
+      rsp_terse_pct_of_headroom: 1.2
+      rtk_pct_of_headroom: 76.5
     hypothetical_active:
       brief:
-        median_delta_pct: -35.4
-        p90_delta_pct: -5
-        fidelity_pass_rate_pct: 100
+        median_delta_pct: 16.3
+        p90_delta_pct: 98.4
+        fidelity_pass_rate_pct: 50
         source: measured
       terse:
         median_delta_pct: 13.7
@@ -173,6 +209,15 @@ filters[7]:
       p90_delta_pct: 27.6
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 58
+      rsp_brief_tokens: 21
+      rsp_terse_tokens: 21
+      rtk_tokens: 63
+      headroom_tokens: 6
+      rsp_brief_pct_of_headroom: 28.6
+      rsp_terse_pct_of_headroom: 28.6
+      rtk_pct_of_headroom: 9.5
     hypothetical_active:
       brief:
         median_delta_pct: 31.9
@@ -207,6 +252,15 @@ filters[7]:
       p90_delta_pct: 72.3
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 153
+      rsp_brief_tokens: 79
+      rsp_terse_tokens: 79
+      rtk_tokens: 54
+      headroom_tokens: 11
+      rsp_brief_pct_of_headroom: 13.9
+      rsp_terse_pct_of_headroom: 13.9
+      rtk_pct_of_headroom: 20.4
     hypothetical_active:
       brief:
         median_delta_pct: 60.5
@@ -241,6 +295,15 @@ filters[7]:
       p90_delta_pct: 100
       fidelity_pass_rate_pct: 100
       source: recorded
+    headroom:
+      raw_tokens: 51368
+      rsp_brief_tokens: 654
+      rsp_terse_tokens: 468
+      rtk_tokens: 208
+      headroom_tokens: 131
+      rsp_brief_pct_of_headroom: 20
+      rsp_terse_pct_of_headroom: 28
+      rtk_pct_of_headroom: 63
     hypothetical_active:
       brief:
         median_delta_pct: 58.8
@@ -252,6 +315,15 @@ filters[7]:
         p90_delta_pct: 100
         fidelity_pass_rate_pct: 100
         source: measured
+aggregate:
+  raw_tokens: 64083
+  rsp_brief_tokens: 12982
+  rsp_terse_tokens: 12798
+  rtk_tokens: 646
+  headroom_tokens: 322
+  rsp_brief_pct_of_headroom: 2.5
+  rsp_terse_pct_of_headroom: 2.5
+  rtk_pct_of_headroom: 49.8
 parity[2]{domain,filter,rsp_median_delta_pct,rtk_median_delta_pct,rsp_fidelity_pass_rate_pct,rtk_fidelity_pass_rate_pct,parity_gate}:
   cargo-test,"cargo:test",61.9,67.8,100,100,fail
   git-commit,"git:commit",0,-78.8,100,100,pass
