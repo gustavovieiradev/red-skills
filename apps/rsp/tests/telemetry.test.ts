@@ -406,6 +406,48 @@ describe("rsp telemetry spool", () => {
       child.once("error", reject);
     });
   }, 40_000);
+
+  it("nudges the built bundle resident after cold-path-only telemetry gets stale", async () => {
+    const root = await tempRoot();
+    await execFileAsync("git", ["init"], { cwd: root });
+    const bundle = await ensureRspBundle();
+    const paths = resolveResidentPaths(root);
+    const staleTimestamp = new Date(Date.now() - 10_000).toISOString();
+    await writeFile(telemetrySpoolPath(root), `${JSON.stringify({
+      collection: RSP_TELEMETRY_INVOCATIONS_COLLECTION,
+      id: "stale-cold-event",
+      ts: staleTimestamp,
+      command: "git log --brief",
+      elided: true,
+      raw_bytes: 1000,
+      emitted_bytes: 100,
+      wrapper_ms: 5,
+    })}\n`, "utf8");
+
+    await execFileAsync(process.execPath, [
+      bundle,
+      "git",
+      "status",
+    ], {
+      cwd: root,
+      env: {
+        ...process.env,
+        RSP_TELEMETRY_DRAIN_INTERVAL_MS: "50",
+        RSP_TELEMETRY_DRAIN_TIMEOUT_MS: String(await calibratedTelemetryDrainTimeoutMs(root)),
+        RSP_IDLE_MS: "5000",
+      },
+    });
+
+    const summary = await waitForStatusSummary(root);
+    await expect(readFile(telemetrySpoolPath(root), "utf8")).resolves.toBe("");
+    expect(summary.tokens_saved_today).toBeGreaterThan(0);
+    await sendResidentRequest({ socketPath: paths.socketPath, timeoutMs: 200 }, {
+      id: "handover",
+      op: "handover",
+      clientVersion: "test",
+    }).catch(() => null);
+  }, 40_000);
+
   it("aggregates rsp gains percentiles, buckets, rankings, and health", async () => {
     const root = await tempRoot();
     const storeUri = `file://${join(root, ".red", "tmp", "red-skills.rdb")}`;
@@ -585,6 +627,17 @@ async function waitForResidentTelemetry(socketPath: string, command: string): Pr
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`telemetry ${command} did not drain`);
+}
+
+async function waitForStatusSummary(root: string): Promise<Record<string, number | string>> {
+  const path = join(root, ".red", "tmp", "rsp-status-summary.json");
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const summary = await readFile(path, "utf8").catch(() => "");
+    if (summary.includes('"updated_at"')) return JSON.parse(summary) as Record<string, number | string>;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("rsp status summary did not refresh");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
