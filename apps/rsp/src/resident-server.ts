@@ -5,6 +5,7 @@ import { createServer, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RedDB } from "@reddb-io/sdk";
+import { removeResidentRegistry, writeResidentRegistry } from "@reddb-io/shared/resident-client.js";
 import type { RspExpiredHandle, RspElisionRecord } from "./elision-store.js";
 import { RspElisionStore } from "./elision-store.js";
 import { createResidentBrainStore } from "./resident-brain.js";
@@ -26,6 +27,7 @@ export interface ResidentServerOptions extends RspResidentConfig {
   rootDir?: string;
   idleMs?: number;
   residentVersion?: string;
+  registryPath?: string;
   telemetryDrainIntervalMs?: number;
   telemetryDrainTimeoutMs?: number;
 }
@@ -83,6 +85,15 @@ export async function runResidentServer(opts: ResidentServerOptions): Promise<vo
       resolve();
     });
   });
+  const residentVersion = opts.residentVersion ?? "0.0.0-dev";
+  const registryPath = opts.registryPath ?? join(opts.rootDir ?? process.cwd(), ".red", "tmp", "rsp-resident.pid.json");
+  try {
+    await writeResidentRegistry(registryPath, {
+      socket_path: opts.socketPath,
+      store_uri: opts.storeUri,
+      resident_version: residentVersion,
+    });
+  } catch {}
   touch();
 
   await new Promise<void>((resolve) => server.once("close", resolve));
@@ -92,6 +103,7 @@ export async function runResidentServer(opts: ResidentServerOptions): Promise<vo
   await safeDrainTelemetry(telemetry, telemetryDrainTimeoutMs);
   await store.close();
   await rm(opts.socketPath, { force: true });
+  await removeResidentRegistry(registryPath);
 }
 
 interface ResidentTelemetryOptions {
