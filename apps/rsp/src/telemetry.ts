@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RedDB } from "@reddb-io/sdk";
@@ -112,6 +112,12 @@ export interface LatencyPercentiles {
   wrapper_ms_p99: number | null;
 }
 
+export interface TelemetryDrainNudgeOptions {
+  maxPendingAgeMs: number;
+  byteThreshold: number;
+  now?: Date;
+}
+
 export function telemetrySpoolPath(rootDir: string): string {
   return join(rootDir, RSP_TELEMETRY_SPOOL);
 }
@@ -122,6 +128,31 @@ export async function appendTelemetryEvent(rootDir: string, event: RspTelemetryE
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(event)}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {}
+}
+
+export function shouldNudgeTelemetryDrain(rootDir: string, opts: TelemetryDrainNudgeOptions): boolean {
+  try {
+    const path = telemetrySpoolPath(rootDir);
+    const stat = statSync(path);
+    if (!stat.isFile() || stat.size <= 0) return false;
+    if (stat.size >= opts.byteThreshold) return true;
+
+    const nowMs = opts.now?.getTime() ?? Date.now();
+    const text = readFileSync(path, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim() === "") continue;
+      const event = parseTelemetryEvent(line);
+      const timestamp = typeof event?.created_at === "string"
+        ? event.created_at
+        : typeof event?.ts === "string"
+          ? event.ts
+          : undefined;
+      if (!timestamp) continue;
+      const ageMs = nowMs - Date.parse(timestamp);
+      if (Number.isFinite(ageMs) && ageMs >= opts.maxPendingAgeMs) return true;
+    }
+  } catch {}
+  return false;
 }
 
 export async function takeTelemetrySpool(rootDir: string): Promise<string[]> {
