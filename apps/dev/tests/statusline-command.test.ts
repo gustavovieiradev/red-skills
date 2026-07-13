@@ -728,6 +728,26 @@ describe("statusline command — rendered line", () => {
     expect(stripAnsi(out.text())).toContain("rsp ↓1.3M");
   });
 
+  it("renders stale rsp savings instead of an error when no resident is running", async () => {
+    await mkdir(join(root, ".red"), { recursive: true });
+    await writeFile(join(root, ".red", "config.yaml"), "rsp:\n  enabled: true\n", "utf8");
+    await seedFreshRepoCache(root, 0, 0);
+    await seedFreshCache(root, 0, 0);
+    await mkdir(dirname(resolveResidentPaths(root).summaryPath), { recursive: true });
+    await writeFile(resolveResidentPaths(root).summaryPath, JSON.stringify({
+      version: 1,
+      tokens_saved_today: 2400,
+      updated_at: new Date(Date.now() - 2 * 60 * 1000 - 1000).toISOString(),
+    }), "utf8");
+    expect(await resolveStatuslineRsp(root, {})).toEqual({ state: "ready", tokensSavedToday: 2400 });
+
+    const out = sink();
+    const code = await statuslineCommand([root], root, out.stream, fakeStdin(PAYLOAD));
+    expect(code).toBe(0);
+    expect(stripAnsi(out.text())).toContain("rsp ↓2.4k");
+    expect(stripAnsi(out.text())).not.toContain("rsp !");
+  });
+
   it("renders rsp error when enabled and no fresh summary or warmup marker exists", async () => {
     await mkdir(join(root, ".red"), { recursive: true });
     await writeFile(join(root, ".red", "config.yaml"), "rsp:\n  enabled: true\n", "utf8");
