@@ -24,6 +24,17 @@ export interface BaselineAxis {
   source: "recorded" | "measured";
 }
 
+export interface HeadroomAxis {
+  raw_tokens: number;
+  rsp_brief_tokens: number;
+  rsp_terse_tokens: number;
+  rtk_tokens: number;
+  headroom_tokens: number;
+  rsp_brief_pct_of_headroom: number | null;
+  rsp_terse_pct_of_headroom: number | null;
+  rtk_pct_of_headroom: number | null;
+}
+
 export interface TwoAxisFilterRow {
   filter: string;
   mode: "active" | "passthrough";
@@ -32,6 +43,7 @@ export interface TwoAxisFilterRow {
   brief: BaselineAxis;
   terse: BaselineAxis;
   rtk: BaselineAxis;
+  headroom: HeadroomAxis;
   /** Measured delta if this filter were forced active; equals brief/terse for active filters, non-zero for passthrough. */
   hypothetical_active: {
     brief: BaselineAxis;
@@ -68,6 +80,7 @@ export interface TwoAxisBenchmarkReport {
     external_claims: ExternalClaim[];
   };
   filters: TwoAxisFilterRow[];
+  aggregate: HeadroomAxis;
   parity: TwoAxisParityRow[];
   summary: string;
   toon: string;
@@ -104,6 +117,11 @@ interface FixtureMeasurement {
   terseFidelity: boolean;
   rtkDelta: number;
   rtkFidelity: boolean;
+  rawTokens: number;
+  briefTokens: number;
+  terseTokens: number;
+  rtkTokens: number;
+  headroomTokens: number;
 }
 
 const tokenizer = encodingForModel("gpt-4o");
@@ -135,6 +153,7 @@ export async function buildTwoAxisBenchmarkReport(options: TwoAxisBenchmarkOptio
       if (!rtkFixture) throw new Error(`missing recorded RTK baseline for ${fixture.name}`);
       const brief = await runFidelityFixture(fixture, { level: "lossless", store });
       const terse = await runFidelityFixture(fixture, { level: "terse", store });
+      const headroomOutput = buildHeadroomOutput(fixture);
       measurements.push({
         fixture,
         filter: filterName(fixture),
@@ -146,6 +165,11 @@ export async function buildTwoAxisBenchmarkReport(options: TwoAxisBenchmarkOptio
         terseFidelity: terse.status === fixture.recorded.status && terse.assertionFailures.length === 0,
         rtkDelta: tokenDelta(fixture.recorded.stdout, rtkFixture.stdout),
         rtkFidelity: rtkFixture.fidelity_assertions_passed,
+        rawTokens: tokenCount(fixture.recorded.stdout),
+        briefTokens: tokenCount(brief.stdout.toString("utf8")),
+        terseTokens: tokenCount(terse.stdout.toString("utf8")),
+        rtkTokens: tokenCount(rtkFixture.stdout),
+        headroomTokens: tokenCount(headroomOutput),
       });
     }
   } finally {
@@ -176,6 +200,7 @@ export async function buildTwoAxisBenchmarkReport(options: TwoAxisBenchmarkOptio
       external_claims: externalClaims(),
     },
     filters: rows,
+    aggregate: aggregateHeadroom(rows),
     parity,
     summary: `${measurements.length} fixtures, ${rows.length} filters; shipped modes apply admission threshold ${ADMISSION_THRESHOLD_PCT}%`,
   } satisfies Omit<TwoAxisBenchmarkReport, "toon">;
@@ -199,11 +224,15 @@ export function renderTwoAxisSummary(report: TwoAxisBenchmarkReport): string {
     `rsp two-axis benchmark: ${report.corpus.fixture_count} fixtures across ${report.filters.length} filters`,
     "",
     `Production mode uses admission threshold ${ADMISSION_THRESHOLD_PCT}%; passthrough filters count as 0% token delta because rsp returns the original command output.`,
+    `Headroom is the token count of the minimal assertion-derived output; capture ratios are headroom tokens divided by emitted tokens.`,
     "",
-    "| Filter | Mode | Fixtures | brief shipped delta | brief fidelity | brief hyp-active delta | terse shipped delta | terse fidelity | terse hyp-active delta | RTK median/p90 token delta | RTK fidelity |",
-    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    `Aggregate tokens: raw ${report.aggregate.raw_tokens}, brief ${report.aggregate.rsp_brief_tokens}, terse ${report.aggregate.rsp_terse_tokens}, RTK ${report.aggregate.rtk_tokens}, headroom ${report.aggregate.headroom_tokens}.`,
+    `Aggregate headroom capture: brief ${fmtRatio(report.aggregate.rsp_brief_pct_of_headroom)}, terse ${fmtRatio(report.aggregate.rsp_terse_pct_of_headroom)}, RTK ${fmtRatio(report.aggregate.rtk_pct_of_headroom)}.`,
+    "",
+    "| Filter | Mode | Fixtures | raw tok | brief tok | terse tok | RTK tok | headroom tok | brief headroom | terse headroom | RTK headroom | brief shipped delta | brief fidelity | brief hyp-active delta | terse shipped delta | terse fidelity | terse hyp-active delta | RTK median/p90 token delta | RTK fidelity |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...report.filters.map((row) =>
-      `| ${row.filter} | ${row.mode} | ${row.fixture_count} | ${fmt(row.brief.median_delta_pct)}/${fmt(row.brief.p90_delta_pct)}% | ${fmt(row.brief.fidelity_pass_rate_pct)}% | ${fmt(row.hypothetical_active.brief.median_delta_pct)}/${fmt(row.hypothetical_active.brief.p90_delta_pct)}% | ${fmt(row.terse.median_delta_pct)}/${fmt(row.terse.p90_delta_pct)}% | ${fmt(row.terse.fidelity_pass_rate_pct)}% | ${fmt(row.hypothetical_active.terse.median_delta_pct)}/${fmt(row.hypothetical_active.terse.p90_delta_pct)}% | ${fmt(row.rtk.median_delta_pct)}/${fmt(row.rtk.p90_delta_pct)}% | ${fmt(row.rtk.fidelity_pass_rate_pct)}% |`
+      `| ${row.filter} | ${row.mode} | ${row.fixture_count} | ${row.headroom.raw_tokens} | ${row.headroom.rsp_brief_tokens} | ${row.headroom.rsp_terse_tokens} | ${row.headroom.rtk_tokens} | ${row.headroom.headroom_tokens} | ${fmtRatio(row.headroom.rsp_brief_pct_of_headroom)} | ${fmtRatio(row.headroom.rsp_terse_pct_of_headroom)} | ${fmtRatio(row.headroom.rtk_pct_of_headroom)} | ${fmt(row.brief.median_delta_pct)}/${fmt(row.brief.p90_delta_pct)}% | ${fmt(row.brief.fidelity_pass_rate_pct)}% | ${fmt(row.hypothetical_active.brief.median_delta_pct)}/${fmt(row.hypothetical_active.brief.p90_delta_pct)}% | ${fmt(row.terse.median_delta_pct)}/${fmt(row.terse.p90_delta_pct)}% | ${fmt(row.terse.fidelity_pass_rate_pct)}% | ${fmt(row.hypothetical_active.terse.median_delta_pct)}/${fmt(row.hypothetical_active.terse.p90_delta_pct)}% | ${fmt(row.rtk.median_delta_pct)}/${fmt(row.rtk.p90_delta_pct)}% | ${fmt(row.rtk.fidelity_pass_rate_pct)}% |`
     ),
     "",
     `Large-output filters: ${report.corpus.large_output_filters.join(", ") || "none"}.`,
@@ -219,6 +248,11 @@ export function renderTwoAxisSummary(report: TwoAxisBenchmarkReport): string {
     "",
   ];
   return lines.join("\n");
+}
+
+export function buildHeadroomOutput(fixture: Pick<FidelityFixture, "assertions">): string {
+  if (fixture.assertions.length === 0) return "";
+  return fixture.assertions.map((assertion) => `${assertion.path}=${JSON.stringify(assertion.expected)}`).join("\n") + "\n";
 }
 
 async function discoverBenchmarkFixtures(fixtureRoot: string): Promise<FidelityFixture[]> {
@@ -278,7 +312,44 @@ function filterRow(filter: string, rows: readonly FixtureMeasurement[], admissio
     brief: active ? measuredBrief : passthroughAxis(rows.length),
     terse: active ? measuredTerse : passthroughAxis(rows.length),
     rtk: axis(rows.map((row) => row.rtkDelta), rows.map((row) => row.rtkFidelity), "recorded"),
+    headroom: headroomAxis(rows, active),
     hypothetical_active: { brief: measuredBrief, terse: measuredTerse },
+  };
+}
+
+function headroomAxis(rows: readonly FixtureMeasurement[], active: boolean): HeadroomAxis {
+  const rawTokens = sum(rows.map((row) => row.rawTokens));
+  const briefTokens = sum(rows.map((row) => active ? row.briefTokens : row.rawTokens));
+  const terseTokens = sum(rows.map((row) => active ? row.terseTokens : row.rawTokens));
+  const rtkTokens = sum(rows.map((row) => row.rtkTokens));
+  const headroomTokens = sum(rows.map((row) => row.headroomTokens));
+  return {
+    raw_tokens: rawTokens,
+    rsp_brief_tokens: briefTokens,
+    rsp_terse_tokens: terseTokens,
+    rtk_tokens: rtkTokens,
+    headroom_tokens: headroomTokens,
+    rsp_brief_pct_of_headroom: captureRatio(headroomTokens, briefTokens),
+    rsp_terse_pct_of_headroom: captureRatio(headroomTokens, terseTokens),
+    rtk_pct_of_headroom: captureRatio(headroomTokens, rtkTokens),
+  };
+}
+
+function aggregateHeadroom(rows: readonly TwoAxisFilterRow[]): HeadroomAxis {
+  const rawTokens = sum(rows.map((row) => row.headroom.raw_tokens));
+  const briefTokens = sum(rows.map((row) => row.headroom.rsp_brief_tokens));
+  const terseTokens = sum(rows.map((row) => row.headroom.rsp_terse_tokens));
+  const rtkTokens = sum(rows.map((row) => row.headroom.rtk_tokens));
+  const headroomTokens = sum(rows.map((row) => row.headroom.headroom_tokens));
+  return {
+    raw_tokens: rawTokens,
+    rsp_brief_tokens: briefTokens,
+    rsp_terse_tokens: terseTokens,
+    rtk_tokens: rtkTokens,
+    headroom_tokens: headroomTokens,
+    rsp_brief_pct_of_headroom: captureRatio(headroomTokens, briefTokens),
+    rsp_terse_pct_of_headroom: captureRatio(headroomTokens, terseTokens),
+    rtk_pct_of_headroom: captureRatio(headroomTokens, rtkTokens),
   };
 }
 
@@ -316,10 +387,15 @@ function filterName(fixture: FidelityFixture): string {
 }
 
 function tokenDelta(original: string, filtered: string): number {
-  const before = tokenizer.encode(original).length;
-  const after = tokenizer.encode(filtered).length;
+  const before = tokenCount(original);
+  const after = tokenCount(filtered);
   if (before === 0) return 0;
   return ((before - after) / before) * 100;
+}
+
+function tokenCount(value: string): number {
+  if (value.length === 0) return 0;
+  return tokenizer.encode(value).length;
 }
 
 function median(values: readonly number[]): number {
@@ -340,8 +416,21 @@ function round(value: number): number {
   return Number(value.toFixed(1));
 }
 
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
+function captureRatio(headroomTokens: number, emittedTokens: number): number | null {
+  if (headroomTokens === 0 || emittedTokens === 0) return null;
+  return round((headroomTokens / emittedTokens) * 100);
+}
+
 function fmt(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function fmtRatio(value: number | null): string {
+  return value === null ? "n/a" : `${fmt(value)}%`;
 }
 
 function externalClaims(): ExternalClaim[] {
