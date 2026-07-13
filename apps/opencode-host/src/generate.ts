@@ -92,7 +92,7 @@ function parseArgs(argv: ReadonlyArray<string>): CliArgs {
     printJson: false,
     copySkills: false,
     pluginFilter: null,
-    slice2: false,
+    slice2: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -133,6 +133,8 @@ function parseArgs(argv: ReadonlyArray<string>): CliArgs {
       args.pluginFilter = [...(args.pluginFilter ?? []), next];
     } else if (arg === "--with-slice-2" || arg === "--slice-2") {
       args.slice2 = true;
+    } else if (arg === "--no-slice-2") {
+      args.slice2 = false;
     } else if (arg === "--copy") {
       args.copySkills = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -153,7 +155,7 @@ Slice 1: opencode.json (provider block) at <out>
 Slice 2: dist tree at <out-dir>/<plugin>/{opencode.json, .opencode/...}
 
 Usage:
-  opencode-host generate [--config <path>] [--out <path>] [--out-dir <path>] [--plugins-root <path>] [--plugin <name>] [--copy] [--print] [--with-slice-2]
+  opencode-host generate [--config <path>] [--out <path>] [--out-dir <path>] [--plugins-root <path>] [--plugin <name>] [--copy] [--print] [--no-slice-2]
   opencode-host generate --help
 
 Options:
@@ -163,7 +165,8 @@ Options:
   -p, --plugins-root <path>  path to the plugins/ tree (default: ./plugins)
       --plugin <name>        emit only this plugin (repeatable; Slice 2 only)
       --copy                 copy SKILL.md instead of symlinking
-      --with-slice-2         also emit the Slice 2 dist tree (skills + hooks); off by default
+      --with-slice-2         compatibility no-op; Slice 2 is emitted by default
+      --no-slice-2           emit only the standalone Slice 1+3 opencode.json
   --print                    print Slice 1 JSON to stdout (Slice 2 not written)
   -h, --help                 show this help
 
