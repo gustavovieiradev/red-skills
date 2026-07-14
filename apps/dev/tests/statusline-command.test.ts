@@ -291,10 +291,13 @@ describe("statusline command — pure helpers", () => {
 describe("statusline command — rendered line", () => {
   let root: string;
   let oldNoColor: string | undefined;
+  let oldCacheDir: string | undefined;
 
   beforeEach(async () => {
     oldNoColor = process.env.NO_COLOR;
+    oldCacheDir = process.env.RED_SKILLS_CACHE_DIR;
     delete process.env.NO_COLOR;
+    delete process.env.RED_SKILLS_CACHE_DIR;
     root = await mkdtemp(join(tmpdir(), "sl-cmd-"));
   });
 
@@ -302,6 +305,8 @@ describe("statusline command — rendered line", () => {
     await rm(root, { recursive: true, force: true });
     if (oldNoColor === undefined) delete process.env.NO_COLOR;
     else process.env.NO_COLOR = oldNoColor;
+    if (oldCacheDir === undefined) delete process.env.RED_SKILLS_CACHE_DIR;
+    else process.env.RED_SKILLS_CACHE_DIR = oldCacheDir;
   });
 
   it("--legend emits the token decode table and does not render the live statusline", async () => {
@@ -382,6 +387,23 @@ describe("statusline command — rendered line", () => {
 
     // The raw output carries the wine-red background SGR (theme on by default).
     expect(out.text()).toContain("\x1b[48;2;114;47;55m");
+  });
+
+  it("marks the plain statusline when the cache holds a newer dev bundle", async () => {
+    const cacheDir = join(root, "cache");
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(join(cacheDir, "dev-999.999.999.bundle.min.mjs"), "", "utf8");
+    process.env.RED_SKILLS_CACHE_DIR = cacheDir;
+    process.env.NO_COLOR = "1";
+    await seedFreshCache(root, 0, 0);
+    await seedFreshRepoCache(root, 0, 0);
+
+    const out = sink();
+    const code = await statuslineCommand([root], root, out.stream, fakeStdin(PAYLOAD));
+    expect(code).toBe(0);
+    expect(out.text()).toContain("v");
+    expect(out.text()).toContain("*");
+    expect(out.text()).not.toContain("\x1b[");
   });
 
   it("shows only the live successor attempt, not a finished/retained pid=0 sibling (issue #1177)", async () => {
