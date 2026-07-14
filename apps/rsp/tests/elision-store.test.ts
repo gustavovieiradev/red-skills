@@ -362,6 +362,130 @@ describe("RspElisionStore", () => {
     }
   });
 
+  it("rotates the physical JSON file so repeated expire sweeps stay under the configured cap", async () => {
+    let now = new Date("2026-07-10T12:00:00.000Z");
+    const root = await tempRoot();
+    const storePath = join(root, "red.rdb");
+    const byteBudget = 900;
+    const store = await RspElisionStore.open({
+      uri: `file://${storePath}`,
+      byteBudget,
+      ephemeralTtlHours: 1,
+      now: () => now,
+    });
+    try {
+      for (let cycle = 0; cycle < 40; cycle += 1) {
+        now = new Date(Date.UTC(2026, 6, 10, 12 + cycle * 2, 0, 0));
+        await store.mint(Buffer.from(`cycle-${cycle}:${"x".repeat(200)}`), {
+          command: `cycle ${cycle}`,
+          loss: { level: "terse", bytes_elided: 200 },
+        });
+        now = new Date(Date.UTC(2026, 6, 10, 13 + cycle * 2, 1, 0));
+        await store.stats();
+      }
+
+      expect((await stat(storePath)).size).toBeLessThanOrEqual(byteBudget + 512);
+      await expect(store.stats()).resolves.toMatchObject({ records: 0 });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("keeps live records readable and expired records non-live across physical rotation", async () => {
+    let now = new Date("2026-07-10T12:00:00.000Z");
+    const root = await tempRoot();
+    git(root, ["init"]);
+    const storePath = join(root, "red.rdb");
+    const store = await RspElisionStore.open({
+      uri: `file://${storePath}`,
+      byteBudget: 900,
+      ttlDays: 7,
+      ephemeralTtlHours: 1,
+      now: () => now,
+    });
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    try {
+      const liveBytes = Buffer.from("live output stays reachable after rotation");
+      const live = await store.mint(liveBytes, {
+        command: "git diff",
+        loss: { level: "terse", bytes_elided: liveBytes.length },
+      });
+      const expired = await store.mint(Buffer.from("temporary output"), {
+        command: "node temporary-output.mjs",
+        loss: { level: "terse", bytes_elided: 16 },
+      });
+
+      now = new Date("2026-07-10T14:00:00.000Z");
+      await expect(store.get(expired)).resolves.toEqual({
+        status: "expired",
+        expired_at: "2026-07-10T13:00:00.000Z",
+        command: "node temporary-output.mjs",
+      });
+
+      for (let i = 0; i < 30; i += 1) {
+        await store.mint(Buffer.from(`rotation filler ${i} ${"y".repeat(150)}`), {
+          command: `node filler-${i}.mjs`,
+          loss: { level: "terse", bytes_elided: 150 },
+        });
+        now = new Date(Date.UTC(2026, 6, 10, 16 + i * 2, 0, 0));
+        await store.stats();
+      }
+
+      const recovered = await store.get(live);
+      if (!recovered || "status" in recovered) throw new Error("expected live record after rotation");
+      expect(recovered.original).toEqual(liveBytes);
+      const expiredAfterRotation = await store.get(expired);
+      expect(expiredAfterRotation == null || "status" in expiredAfterRotation).toBe(true);
+    } finally {
+      process.chdir(previousCwd);
+      await store.close();
+    }
+  });
+
+  it("cuts over old local store formats to a fresh v1 document without migration", async () => {
+    const root = await tempRoot();
+    const storePath = join(root, "red.rdb");
+    await writeFile(
+      storePath,
+      JSON.stringify({
+        version: 0,
+        rows: [{
+          handle: "el:aaaaaaaaaaaa",
+          original: Buffer.from("legacy").toString("base64"),
+          original_encoding: "base64",
+        }],
+      }),
+      "utf8",
+    );
+
+    const store = await RspElisionStore.open({
+      uri: `file://${storePath}`,
+      now: () => new Date("2026-07-10T12:00:00.000Z"),
+    });
+    try {
+      await expect(store.stats()).resolves.toMatchObject({ records: 0 });
+      await expect(store.get("el:aaaaaaaaaaaa")).resolves.toBeNull();
+
+      const handle = await store.mint(Buffer.from("fresh"), {
+        command: "node fresh.mjs",
+        loss: { level: "brief", bytes_elided: 5 },
+      });
+      expect((await store.get(handle))?.original).toEqual(Buffer.from("fresh"));
+
+      const raw = JSON.parse(await readFile(storePath, "utf8")) as {
+        version?: number;
+        rows?: unknown[];
+        index?: { records?: unknown[] };
+      };
+      expect(raw.version).toBe(1);
+      expect(raw.rows).toBeUndefined();
+      expect(raw.index?.records).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("performs zero writes to the content store on a no-expiration sweep", async () => {
     const root = await tempRoot();
     const storePath = join(root, "red.rdb");
