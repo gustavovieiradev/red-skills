@@ -2,7 +2,34 @@
 
 Records every change made to skills inherited from [`mattpocock/skills`](https://github.com/mattpocock/skills), plus new skills created by reddb.io. See the rules in [CLAUDE.md](./CLAUDE.md).
 
-Upstream base: `mattpocock/skills@d574778f94cf620fcc8ce741584093bc650a61d3` (v1.1.0 tag commit; see `.upstream`).
+Upstream base: `mattpocock/skills@66898f60e8c744e269f8ce06c2b2b99ce7660d5f` (upstream `main`; see `.upstream`).
+
+---
+
+## wayfinder (engineering) - upstream research subagents intentionally not adopted (issue #1699)
+
+- **status**: not-adopted
+- **upstream**: `66898f6` (upstream `wayfinder`)
+- **why**: Upstream now burns down wayfinder research tickets by firing in-session `/research` subagents in parallel during charting. RedSkills routes research children through the AFK fleet instead, which gives isolated worktrees, shared validation gates, queue visibility, PR-backed results, and normal recovery semantics. That is the stronger contract for this repo.
+- **what changed**: Recorded the divergence only. No skill content was imported in this upstream-pin slice.
+
+---
+
+## skills - upstream per-skill Codex metadata intentionally not adopted (issue #1699)
+
+- **status**: not-adopted
+- **upstream**: `66898f6` (added `agents/openai.yaml` files across upstream skills)
+- **why**: Upstream now carries handwritten per-skill `agents/openai.yaml` metadata. RedSkills generates Codex-facing manifests from its plugin and skill inventory, so copying upstream metadata would create a second source of truth.
+- **what changed**: Recorded the divergence only. RedSkills keeps generated Codex manifests as the authoritative metadata surface.
+
+---
+
+## to-tickets (engineering) - upstream local-file ticket mode intentionally not adopted (issue #1699)
+
+- **status**: not-adopted
+- **upstream**: `66898f6` (upstream `to-tickets`)
+- **why**: Upstream's local issue tracker now writes one file per ticket. RedSkills publishes executable work to GitHub Issues, where labels, dependencies, AFK claims, HITL parking, and PR closeout are visible to the fleet.
+- **what changed**: Recorded the divergence only. No local-file ticket mode was imported.
 
 ---
 
