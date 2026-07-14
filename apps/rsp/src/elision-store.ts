@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,6 +133,8 @@ interface StoreDocument {
   tombstones: Record<string, RspExpiredHandle>;
   index: IndexDocument;
 }
+
+const STORE_ROTATION_HEADROOM_BYTES = 512;
 
 export class RspElisionStore {
   private document!: StoreDocument;
@@ -386,7 +388,11 @@ export class RspElisionStore {
 
   private async flush(): Promise<void> {
     if (!this.dirty) return;
-    await writeStoreDocument(this.path, this.document);
+    const rotate = storeDocumentBytes(this.document) > physicalStoreBudget(this.opts.byteBudget) ||
+      await shouldRotateStoreDocument(this.path, this.opts.byteBudget);
+    const document = rotate ? compactStoreDocument(this.document, physicalStoreBudget(this.opts.byteBudget)) : this.document;
+    await writeStoreDocument(this.path, document);
+    this.document = document;
     this.dirty = false;
   }
 
@@ -427,47 +433,8 @@ export class RspElisionStore {
       throw new Error(`cannot self-heal elision collection ${RSP_ELISION_COLLECTION}: unsupported model ${meta.model}`);
     }
 
-    const migrated = await this.readLegacyElisionTableRows();
     await this.db.query(`DROP TABLE ${RSP_ELISION_COLLECTION}`);
     await this.db.query(`CREATE KV IF NOT EXISTS ${RSP_ELISION_COLLECTION}`);
-    for (const entry of migrated) {
-      await this.kv().put(entry.key, entry.value);
-    }
-    await this.ensureMigratedRedDbIndex(migrated);
-  }
-
-  private async readLegacyElisionTableRows(): Promise<Array<{ key: string; value: unknown }>> {
-    if (!this.db) throw new Error("rsp RedDB store is not open");
-    const result = await this.db.query(`SELECT * FROM ${RSP_ELISION_COLLECTION}`);
-    const migrated: Array<{ key: string; value: unknown }> = [];
-    for (const row of result.rows) {
-      const entry = legacyElisionRowToKvEntry(row);
-      if (entry) migrated.push(entry);
-    }
-    return migrated;
-  }
-
-  private async ensureMigratedRedDbIndex(migrated: Array<{ key: string; value: unknown }>): Promise<void> {
-    const hasIndex = migrated.some((entry) => entry.key === indexKey() && isIndexDocument(parseKvValue(entry.value)));
-    if (hasIndex) return;
-    const records = migrated
-      .map((entry): IndexEntry | null => {
-        const record = parseKvValue(entry.value);
-        if (!isStoredRecord(record)) return null;
-        return {
-          handle: record.handle,
-          key: recordKey(record.handle),
-          bytes: storedBytesForRecord(record),
-          raw_bytes: record.original_bytes,
-          command: record.command,
-          created_at: record.created_at,
-          expires_at: record.expires_at,
-          storage_class: storageClassForRecord(record),
-          blob_key: record.blob_key,
-        };
-      })
-      .filter((entry): entry is IndexEntry => entry != null);
-    await this.writeRedDbIndex({ version: 1, records });
   }
 
   private async mintRedDb(original: Uint8Array | Buffer, meta: RspMintMeta): Promise<`el:${string}`> {
@@ -1044,30 +1011,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function legacyElisionRowToKvEntry(row: unknown): { key: string; value: unknown } | null {
-  if (!isPlainObject(row)) return null;
-  if (typeof row.key === "string" && row.key.trim() !== "") {
-    return { key: row.key, value: parseKvValue(row.value) };
-  }
-  if (typeof row.record_key === "string" && row.record_key.trim() !== "") {
-    return { key: row.record_key, value: parseKvValue(row.value) };
-  }
-  if (isStoredRecord(row)) return { key: recordKey(row.handle), value: row };
-  if (isExpiredHandle(row) && typeof row.handle === "string" && isHandle(row.handle)) {
-    return { key: tombstoneKey(row.handle), value: row };
-  }
-  return null;
-}
-
-function parseKvValue(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return value;
-  }
-}
-
 interface ResidentRecallHit {
   id: string;
   rid: number;
@@ -1237,9 +1180,58 @@ async function readStoreDocument(path: string): Promise<StoreDocument> {
       await writeStoreDocument(path, document);
       return document;
     }
+  }
+  const document = emptyStoreDocument();
+  await writeStoreDocument(path, document);
+  return document;
+}
+
+async function shouldRotateStoreDocument(path: string, byteBudget: number): Promise<boolean> {
+  try {
+    const current = await stat(path);
+    return current.size > physicalStoreBudget(byteBudget);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw err;
   }
-  throw new Error("rsp elision store is unreadable");
+}
+
+function physicalStoreBudget(byteBudget: number): number {
+  return byteBudget + STORE_ROTATION_HEADROOM_BYTES;
+}
+
+function storeDocumentBytes(document: StoreDocument): number {
+  return Buffer.byteLength(`${JSON.stringify(document)}\n`, "utf8");
+}
+
+function compactStoreDocument(document: StoreDocument, physicalBudget: number): StoreDocument {
+  const records: Record<string, StoredRecord> = {};
+  const blobs: Record<string, StoredBlob> = {};
+  const liveEntries = document.index.records.filter((entry) => isStoredRecord(document.records[entry.key]));
+  for (const entry of liveEntries) {
+    const record = document.records[entry.key]!;
+    records[entry.key] = record;
+    if (record.blob_key) {
+      const blob = document.blobs[record.blob_key];
+      if (isStoredBlob(blob)) blobs[record.blob_key] = blob;
+    }
+  }
+  const withTombstones: StoreDocument = {
+    version: 1,
+    records,
+    blobs,
+    tombstones: document.tombstones,
+    index: { version: 1, records: liveEntries },
+  };
+  if (storeDocumentBytes(withTombstones) <= physicalBudget) return withTombstones;
+  const boundedTombstones: Record<string, RspExpiredHandle> = {};
+  for (const [key, tombstone] of Object.entries(document.tombstones)
+    .sort(([, a], [, b]) => b.expired_at.localeCompare(a.expired_at))) {
+    const next: StoreDocument = { ...withTombstones, tombstones: { ...boundedTombstones, [key]: tombstone } };
+    if (storeDocumentBytes(next) > physicalBudget && Object.keys(boundedTombstones).length > 0) continue;
+    boundedTombstones[key] = tombstone;
+  }
+  return { ...withTombstones, tombstones: boundedTombstones };
 }
 
 async function writableStorePath(path: string): Promise<string> {
