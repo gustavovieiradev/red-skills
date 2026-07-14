@@ -37,6 +37,10 @@ export interface ProjectInput {
    * Rendered as a dim `v<version>` tag on the themed header line so the user can
    * see which RedSkills version is producing the statusline. Themed line only. */
   version?: string;
+  /** Newest locally cached `dev` bundle version when it is newer than
+   * {@link version}. The render path never looks this up itself; the IO layer
+   * injects it from the launcher cache so statusline rendering stays network-free. */
+  updateAvailableVersion?: string;
 }
 
 /** The block-2/3 Claude Code payload inputs. */
@@ -293,13 +297,14 @@ export function formatCacheAge(ageS: number): string {
  */
 export function renderProjectBlock(project: ProjectInput): string {
   const base = project.basename;
+  const suffix = project.version && project.updateAvailableVersion ? ` v${project.version}*` : "";
   if (project.branch) {
     let branch = project.branch;
     if (branch.length > BRANCH_MAX) branch = `${branch.slice(0, 27)}…`;
-    return `${base} (${branch})`;
+    return `${base} (${branch})${suffix}`;
   }
-  if (project.detachedSha) return `${base} (detached ${project.detachedSha})`;
-  return base;
+  if (project.detachedSha) return `${base} (detached ${project.detachedSha})${suffix}`;
+  return `${base}${suffix}`;
 }
 
 /** Block 2: `model` or `model·effort`; null when there is no model. */
