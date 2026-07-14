@@ -93,6 +93,15 @@ describe("statusline style — header line", () => {
     expect(t).toContain("loc=+142 -36");
   });
 
+  it("marks the rendered session version when a newer cached bundle exists", () => {
+    const h = renderHeaderLine(
+      { ...input.project, version: "1.2.3", updateAvailableVersion: "1.2.4" },
+      claude,
+      repo,
+    );
+    expect(stripAnsi(h)).toContain("v1.2.3*");
+  });
+
   it("renders only the usage window that is present (graceful absence)", () => {
     const t = stripAnsi(renderHeaderLine(input.project, { ...claude, usage7d: undefined }, repo));
     expect(t).toContain("5h=23%");
