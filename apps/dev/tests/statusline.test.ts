@@ -199,6 +199,17 @@ describe("statusline — project block", () => {
       "p (detached abc1234)",
     );
   });
+
+  it("adds a compact update hint when a newer cached bundle exists", () => {
+    expect(
+      renderProjectBlock({
+        basename: "red-skills",
+        branch: "main",
+        version: "1.2.3",
+        updateAvailableVersion: "1.2.4",
+      }),
+    ).toBe("red-skills (main) v1.2.3*");
+  });
 });
 
 describe("statusline — model block", () => {
