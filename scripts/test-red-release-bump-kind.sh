@@ -145,6 +145,31 @@ else
   fail "release workflow must call the guarded bump-kind script with the maintainer variable"
 fi
 
+if grep -qF 'workflow_dispatch:' "$workflow" &&
+   grep -qF 'cron: "17 * * * *"' "$workflow"; then
+  pass "release workflow exposes manual and hourly deferred-release retries"
+else
+  fail "release workflow must support workflow_dispatch plus an hourly retry schedule"
+fi
+
+if grep -qF "github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip release]')" "$workflow"; then
+  pass "release workflow lets scheduled/manual retry events reach the bump decider"
+else
+  fail "release workflow job guard must not dereference push-only head_commit on retry events"
+fi
+
+if grep -qF "workflow_dispatch retry will publish once the fleet drains" "$workflow"; then
+  pass "deferred-release notice points operators at retry paths"
+else
+  fail "deferred-release notice must mention scheduled/manual retry after the fleet drains"
+fi
+
+if grep -qF 'RED_BUILD_TIME: ${{ github.event.head_commit.timestamp || github.run_started_at }}' "$workflow"; then
+  pass "release workflow has a build timestamp fallback for non-push retries"
+else
+  fail "release workflow must not depend on push-only head_commit.timestamp during retries"
+fi
+
 if grep -qF 'steps.bump.outputs.consume_major_opt_in == '\''true'\''' "$workflow" &&
    grep -qF 'gh variable delete RED_RELEASE_ALLOW_MAJOR' "$workflow"; then
   pass "release workflow consumes the major opt-in variable"
