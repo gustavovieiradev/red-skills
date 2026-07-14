@@ -124,7 +124,8 @@ function projectContent(project: ProjectInput, includeVersion = true): string {
   } else if (project.detachedSha) {
     ref = ` ${DIM}(detached ${project.detachedSha})${WHITE}`;
   }
-  const ver = includeVersion && project.version ? ` ${DIM}v${project.version}${WHITE}` : "";
+  const update = project.updateAvailableVersion ? "*" : "";
+  const ver = includeVersion && project.version ? ` ${DIM}v${project.version}${update}${WHITE}` : "";
   return `${GOLD}»${WHITE} ${BOLD}${project.basename}${NOBOLD}${ref}${ver}`;
 }
 
