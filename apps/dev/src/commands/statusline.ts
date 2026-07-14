@@ -16,7 +16,8 @@
 // `.workspace.project_dir` (the fixed session root — survives `cd` into subdirs),
 // else `.workspace.current_dir // .cwd`, else `process.cwd()`.
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import { readBuildInfo } from "@reddb-io/build-info";
 import { resolveBase } from "../core/base-resolver.js";
@@ -222,12 +223,54 @@ export async function resolveStatuslineRsp(root: string, env: NodeJS.ProcessEnv 
 async function resolveProject(root: string): Promise<ProjectInput> {
   const ctx: gitx.GitContext = { cwd: root };
   const version = readBuildInfo("dev").version;
-  const base: ProjectInput = { basename: basename(root), version };
+  const base: ProjectInput = {
+    basename: basename(root),
+    version,
+    updateAvailableVersion: newestCachedDevVersion(version, process.env),
+  };
   const branch = await gitx.currentBranch(ctx);
   if (branch) return { ...base, branch };
   const sha = await gitx.headShortSha(ctx);
   if (sha) return { ...base, detachedSha: sha };
   return base;
+}
+
+function cacheRoot(env: NodeJS.ProcessEnv): string {
+  if (env.RED_SKILLS_CACHE_DIR) return env.RED_SKILLS_CACHE_DIR;
+  if (env.XDG_CACHE_HOME) return join(env.XDG_CACHE_HOME, "red-skills", "bundles");
+  return join(env.HOME ?? homedir(), ".cache", "red-skills", "bundles");
+}
+
+function semverParts(version: string): [number, number, number] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+function compareVersions(a: string, b: string): number {
+  const av = semverParts(a);
+  const bv = semverParts(b);
+  if (!av || !bv) return 0;
+  return av[0] - bv[0] || av[1] - bv[1] || av[2] - bv[2];
+}
+
+function newestCachedDevVersion(sessionVersion: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  if (!sessionVersion) return undefined;
+  let entries: string[];
+  try {
+    entries = readdirSync(cacheRoot(env));
+  } catch {
+    return undefined;
+  }
+  let newest: string | undefined;
+  for (const entry of entries) {
+    const m = /^dev-(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?)\.bundle\.min\.mjs$/.exec(entry);
+    const version = m?.[1];
+    if (!version) continue;
+    if (compareVersions(version, sessionVersion) <= 0) continue;
+    if (!newest || compareVersions(version, newest) > 0) newest = version;
+  }
+  return newest;
 }
 
 /** Project the Claude Code payload into the renderer's block-2/3 input. */
