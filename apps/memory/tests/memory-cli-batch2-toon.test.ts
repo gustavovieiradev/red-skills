@@ -10,7 +10,7 @@ import dashboardCorpus from "./fixtures/dashboard-toon-corpus.json" with { type:
 import timelineCorpus from "./fixtures/timeline-toon-corpus.json" with { type: "json" };
 import { MemoryStore } from "../src/graph-store.js";
 import { initGraph } from "../src/init.js";
-import { renderToonOutput } from "../src/toon-output.js";
+import { renderToonDocument, renderToonOutput } from "../src/toon-output.js";
 
 const TIMEOUT = 40_000;
 const pkgRoot = resolve(__dirname, "..");
@@ -240,5 +240,69 @@ describe("memory CLI batch 2 TOON output", () => {
       expect(Number.isFinite(reduction)).toBe(true);
       expect(decode(toon)).toEqual(payload);
     }
+  });
+
+  test("shared TOON documents are lossless by default for whitespace and bracket-bearing strings", () => {
+    const payload = {
+      markdown: "first line\n\nsecond line with [brackets] and {braces}",
+      rows: [
+        {
+          excerpt: "  keep leading and trailing whitespace  ",
+          reason: "array[0] and object{key} are data, not syntax",
+        },
+      ],
+    };
+
+    const toon = renderToonDocument(payload);
+
+    expect(decode(toon)).toEqual(payload);
+  });
+
+  test("compact TOON output declares reductions in-band and reports measured token delta", () => {
+    const payload = {
+      entries: [
+        {
+          section: "core",
+          title: "JWT token work",
+          nodeType: "decision",
+          importance: 1,
+          confidence: "EXTRACTED",
+          trust: 0.9,
+          citation: "memory_nodes:1",
+          reason: "line one\n\nline two",
+          excerpt: "Keep [brackets], but collapse    spacing\nfor compact mode.",
+          expandHandle: "memory_nodes:1",
+        },
+      ],
+      summary: {
+        status: "ok",
+        goal: "JWT token work",
+        entries: 1,
+      },
+    };
+    const compact = renderToonOutput({
+      rowsKey: "entries",
+      rows: payload.entries,
+      fields: ["section", "title", "nodeType", "importance", "confidence", "trust", "citation", "reason", "excerpt", "expandHandle"],
+      summary: payload.summary,
+      compact: true,
+    });
+    const decoded = decode(compact) as {
+      entries: Array<Record<string, unknown>>;
+      reduction: Record<string, unknown>;
+    };
+    const tokenizer = encodingForModel("gpt-4o");
+    const jsonTokens = tokenizer.encode(JSON.stringify(payload, null, 2)).length;
+    const compactTokens = tokenizer.encode(compact).length;
+    const reduction = ((jsonTokens - compactTokens) / jsonTokens) * 100;
+    console.info(`memory context-pack compact token delta: reduction=${reduction.toFixed(1)}%`);
+
+    expect(decoded.entries[0].reason).toBe("line one line two");
+    expect(decoded.entries[0].excerpt).toBe("Keep [brackets], but collapse spacing for compact mode.");
+    expect(decoded.reduction).toMatchObject({
+      mode: "compact",
+      recovery: "rerun without --compact",
+    });
+    expect(Number.isFinite(reduction)).toBe(true);
   });
 });
