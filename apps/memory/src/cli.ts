@@ -319,6 +319,7 @@ import { slugify, storeNote } from "./store.js";
 import { readBuildInfo, renderVersion } from "@reddb-io/build-info";
 import { parseLooseArgs, type LooseParsedArgs } from "@reddb-io/shared/args.js";
 import { renderToonOutput } from "./toon-output.js";
+import { convertRegisteredToonSurfaces } from "./toon-migration.js";
 
 const USAGE = `memory — governed operational memory for code agents
 
@@ -519,6 +520,7 @@ Usage:
   agent-memory-server JSON dumps. See \`docs/migrating-from-ams.md\`.
   memory import ams <dump.json>     [--root <dir>] [--json]
   memory import map <artifact.json> [--kind graphify|scip|lsp|static-analysis] [--root <dir>] [--json]
+  memory toon-migrate               [--root <dir>] [--json]
 
   Benchmarks and reference eval live in the embedded app \`benchmark-memory\`.
 
@@ -8505,6 +8507,22 @@ async function runAfkFinalize(args: ParsedArgs): Promise<void> {
   }
 }
 
+async function runToonMigrate(args: ParsedArgs): Promise<void> {
+  const rootDir = rootOf(args.flags);
+  const json = Boolean(args.flags.json);
+  const report = await convertRegisteredToonSurfaces({ rootDir });
+  if (json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else if (report.status === "refused") {
+    console.error(`memory toon-migrate: refused: ${report.reasons.join("; ")}`);
+  } else {
+    console.log(
+      `memory toon-migrate: ${report.status} converted=${report.converted.length} skipped=${report.skipped.length} missing=${report.missing.length}`,
+    );
+  }
+  if (report.status === "refused") process.exitCode = 1;
+}
+
 async function main(): Promise<void> {
   const args = parseLooseArgs(process.argv.slice(2));
   if (args.command === "--version" || args.command === "-v" || args.command === "version" || args.flags.version === true || args.flags.v === true) {
@@ -8548,6 +8566,8 @@ async function main(): Promise<void> {
       return runFederate(args);
     case "autocure":
       return runAutocure(args);
+    case "toon-migrate":
+      return runToonMigrate(args);
     case "smart-search-viewer":
       return runSmartSearchViewer(args);
     case "capsule":
