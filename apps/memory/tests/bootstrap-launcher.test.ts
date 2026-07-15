@@ -35,6 +35,11 @@ const RED_KEY: string = platformKey(process.platform, process.arch);
 // A fake runtime that announces itself so a test can prove the real cached
 // runtime — not a no-op — executed.
 const CLI_BODY = `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+if (process.argv[2] === "toon-migrate" && process.env.RED_MEMORY_MIGRATION_PROBE) {
+  appendFileSync(process.env.RED_MEMORY_MIGRATION_PROBE, process.argv.slice(2).join(" ") + "\\n");
+  process.exit(0);
+}
 process.stdout.write("MEMORY-RUNTIME-RAN " + process.argv.slice(2).join(" ") + "\\n");
 `;
 const MCP_BODY = "#!/usr/bin/env node\nprocess.exit(0);\n";
@@ -160,6 +165,18 @@ async function warmCache(cacheDir: string): Promise<void> {
   const red = join(dir, process.platform === "win32" ? "red.exe" : "red");
   await writeFile(red, RED_BODY);
   await chmod(red, 0o755);
+}
+
+async function waitForProbe(path: string, deadlineMs = 2_000): Promise<string> {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      if (Date.now() >= deadline) throw new Error(`probe was not written: ${path}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 
 const cliPath = (cacheDir: string) =>
@@ -339,6 +356,41 @@ describe("memory launcher distribution (ADR 0084, #1030)", () => {
       expect(r.stdout).toBe("{}");
       expect(release.hits()).toBe(0);
       expect(existsSync(cliPath(cacheDir))).toBe(false);
+    } finally {
+      await release.close();
+    }
+  });
+
+  test("SessionStart triggers pending TOON migration detached without changing hook output", async () => {
+    const cacheDir = await makeCacheDir();
+    await warmCache(cacheDir);
+    const cwd = await enabledCwd();
+    await mkdir(join(cwd, ".red", "tmp"), { recursive: true });
+    await writeFile(join(cwd, ".red", "tmp", "statusline-cache.json"), JSON.stringify({ queue: 1, human: 0, ts: 1 }), "utf8");
+    const probe = join(cwd, ".red", "tmp", "migration-probe.txt");
+    const release = await startRelease();
+    try {
+      const child = spawn(process.execPath, [BOOTSTRAP, "hook", "SessionStart", "--runner", "claude"], {
+        cwd,
+        env: {
+          ...process.env,
+          RED_MEMORY_CACHE_DIR: cacheDir,
+          RED_MEMORY_RELEASE_BASE: release.url,
+          RED_NPM_REGISTRY_BASE: release.url,
+          RED_MEMORY_MIGRATION_PROBE: probe,
+          CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT,
+          NODE_ENV: "test",
+        },
+      });
+      let stdout = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (d) => (stdout += d));
+      const code = await new Promise<number | null>((res) => child.on("close", res));
+
+      expect(code).toBe(0);
+      expect(stdout).toBe("MEMORY-RUNTIME-RAN hook SessionStart --runner claude\n");
+      await expect(waitForProbe(probe)).resolves.toContain(`toon-migrate --root ${cwd} --triggered-by bootstrap`);
+      expect(release.hits()).toBe(0);
     } finally {
       await release.close();
     }
