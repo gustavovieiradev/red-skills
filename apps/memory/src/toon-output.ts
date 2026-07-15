@@ -9,25 +9,22 @@ import {
 
 type JsonRecord = Record<string, JsonValue>;
 
-function toJsonValue(value: unknown, strictStrings = false, key = ""): JsonValue {
+function toJsonValue(value: unknown): JsonValue {
   if (value == null) return null;
   if (typeof value === "string") {
-    const normalized = value.replace(/\\[nrt]/g, " ").replace(/\s+/g, " ").trim();
-    return strictStrings || key === "markdown"
-      ? normalized.replace(/[\[\]{}]/g, " ")
-      : normalized;
+    return value;
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return Number.isNaN(value) ? null : value;
   }
   if (Array.isArray(value)) {
-    return value.map((child) => toJsonValue(child, strictStrings, key));
+    return value.map((child) => toJsonValue(child));
   }
   if (typeof value === "object") {
     const out: JsonRecord = {};
     for (const [key, child] of Object.entries(value)) {
       if (child !== undefined && typeof child !== "function" && typeof child !== "symbol") {
-        out[key] = toJsonValue(child, strictStrings, key);
+        out[key] = toJsonValue(child);
       }
     }
     return out;
@@ -41,6 +38,7 @@ export interface ToonOutputOptions<Row extends JsonRecord> {
   fields: readonly (keyof Row & string)[];
   summary: JsonValue;
   extra?: JsonRecord;
+  compact?: boolean;
 }
 
 /**
@@ -55,9 +53,34 @@ export function renderToonOutput<Row extends JsonRecord>({
   fields,
   summary,
   extra = {},
+  compact = false,
 }: ToonOutputOptions<Row>): string {
+  const projected = projectFields(rows, fields);
+  if (compact) {
+    const reductions: string[] = [];
+    const reducedValue = reduceJsonValue(
+      {
+        [rowsKey]: projected as JsonValue,
+        ...extra,
+      } as JsonObject,
+      "",
+      reductions,
+    ) as JsonObject;
+    const reducedSummary = reduceJsonValue(summary, "summary", reductions);
+    return appendSummaryField(
+      {
+        ...reducedValue,
+        reduction: {
+          mode: "compact",
+          reduced: reductions.length > 0 ? reductions.slice(0, 20) : ["none"],
+          recovery: "rerun without --compact",
+        },
+      },
+      reducedSummary,
+    );
+  }
   const value = {
-    [rowsKey]: projectFields(rows, fields),
+    [rowsKey]: projected,
     ...extra,
   } as JsonObject;
   return appendSummaryField(value, summary);
@@ -65,10 +88,25 @@ export function renderToonOutput<Row extends JsonRecord>({
 
 export function renderToonDocument(value: unknown): string {
   const output = encode(toJsonValue(value));
-  try {
-    decode(output);
-    return output;
-  } catch {
-    return encode(toJsonValue(value, true));
+  decode(output);
+  return output;
+}
+
+function reduceJsonValue(value: JsonValue, path: string, reductions: string[]): JsonValue {
+  if (typeof value === "string") {
+    const reduced = value.replace(/\s+/g, " ").trim();
+    if (reduced !== value) reductions.push(`${path || "$"}: whitespace collapsed`);
+    return reduced;
   }
+  if (Array.isArray(value)) {
+    return value.map((child, index) => reduceJsonValue(child, `${path}[${index}]`, reductions));
+  }
+  if (value && typeof value === "object") {
+    const out: JsonRecord = {};
+    for (const [key, child] of Object.entries(value)) {
+      out[key] = reduceJsonValue(child, path ? `${path}.${key}` : key, reductions);
+    }
+    return out;
+  }
+  return value;
 }
