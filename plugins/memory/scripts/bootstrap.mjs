@@ -436,6 +436,32 @@ function spawnBackgroundSelfUpdate() {
   }
 }
 
+function hasPendingToonMigration(cwd) {
+  return (
+    existsSync(join(cwd, ".red", "tmp", "statusline-cache.json")) &&
+    !existsSync(join(cwd, ".red", "tmp", "statusline-cache.toon"))
+  );
+}
+
+/** Fire-and-forget the big-bang TOON migration; never blocks hooks/render paths. */
+function spawnBackgroundToonMigration(runtime, cwd) {
+  try {
+    if (!hasPendingToonMigration(cwd)) return;
+    const child = spawn(
+      process.execPath,
+      [runtime.cliPath, "toon-migrate", "--root", cwd, "--triggered-by", "bootstrap"],
+      {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, REDDB_BIN: runtime.redPath },
+      },
+    );
+    child.unref();
+  } catch {
+    /* best-effort */
+  }
+}
+
 // ── Per-directory plugin gate (ADR 0067) ─────────────────────────────────────
 // Mirror of packages/shared/plugin-gate.ts (pluginEnabledInConfig + walk-up),
 // inlined because the launcher ships dependency-free in the plugin checkout and
@@ -602,6 +628,7 @@ async function main() {
     }
     // The runtime resolved: any earlier degrade is stale.
     await clearDegradeMarker();
+    if (argv[0] === "hook" && argv[1] === "SessionStart") spawnBackgroundToonMigration(runtime, process.cwd());
     const code = await delegate(runtime, argv);
     process.exit(code);
   } catch (err) {
