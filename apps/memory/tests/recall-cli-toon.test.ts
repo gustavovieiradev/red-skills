@@ -9,6 +9,7 @@ import { decode } from "@reddb-io/toon";
 import recallCorpus from "./fixtures/recall-toon-corpus.json" with { type: "json" };
 import { resolveNotesDir } from "../src/config.js";
 import { initMarkdownOnly } from "../src/init.js";
+import { renderSignalProvenance } from "../src/graph-recall.js";
 import { storeNote } from "../src/store.js";
 import { renderToonOutput } from "../src/toon-output.js";
 
@@ -99,6 +100,19 @@ describe("memory recall TOON output", () => {
     expect(decoded.next).toBe('try `memory store "..."` to add governed context, then rerun recall');
   });
 
+  test("--compact declares its reduction and recovery path in-band", async () => {
+    const root = await rootWithRecallFacts();
+
+    const result = runMemory(["recall", "--root", root, "redis", "--compact"]);
+
+    expect(result.status, result.stderr).toBe(0);
+    const decoded = decode(result.stdout) as { reduction: Record<string, unknown> };
+    expect(decoded.reduction).toMatchObject({
+      mode: "compact",
+      recovery: "rerun without --compact",
+    });
+  });
+
   test("reports a measured token delta for representative recall payloads", () => {
     const payload = recallCorpus;
     const json = JSON.stringify(payload, null, 2);
@@ -118,5 +132,21 @@ describe("memory recall TOON output", () => {
 
     expect(Number.isFinite(reduction)).toBe(true);
     expect(decode(toon)).toEqual(payload);
+  });
+
+  test("signal provenance rows are emitted by the spec TOON encoder", () => {
+    const output = renderSignalProvenance([
+      { source: "keyword:array[0], object{key}", rank: 1, contribution: 0.01639344262295082 },
+    ]).join("\n");
+
+    expect(decode(output)).toEqual({
+      signal_provenance: [
+        {
+          source: "keyword:array[0], object{key}",
+          rank: 1,
+          contribution: "0.016393",
+        },
+      ],
+    });
   });
 });
