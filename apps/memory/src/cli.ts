@@ -352,14 +352,14 @@ Usage:
   memory evidence approve <id>      [--root <dir>] --yes [--reviewer <id>] [--json]
   memory evidence reject <id>       [--root <dir>] --reason <text> --yes [--reviewer <id>] [--json]
   memory classify <candidate...>    [--root <dir>] [--json]
-  memory recall <query...>          [--root <dir>] [--limit N] [--include-superseded] [--scope ...] [--scope-id ID] [--include-narrower-scopes] [--as-of <reddb-ref>] [--layer L1|L2|L3]
+  memory recall <query...>          [--root <dir>] [--limit N] [--include-superseded] [--scope ...] [--scope-id ID] [--include-narrower-scopes] [--as-of <reddb-ref>] [--layer L1|L2|L3] [--compact]
   memory federate                   [--root <dir>] --query "<topic>" [--limit N] [--per-root-limit N] [--json]
   memory whatif                     [--root <dir>] --change "<descriptor>" [--change "<descriptor>" ...] [--limit N] [--json]
   memory autocure                   [--root <dir>] [--apply] [--stale-days N] [--json]
   memory smart-search <query...>    [--root <dir>] [--limit N] [--depth N] [--json]
   memory capsule <goal...>          [--root <dir>] [--source context-pack|handoff] [--budget N] [--limit N] [--json] [--scope ...] [--scope-id ID] [--include-narrower-scopes]
   memory smart-search-viewer <query...> [--root <dir>] [--limit N] [--depth N] [--out <file>]
-  memory context-pack <goal...>     [--root <dir>] [--budget N] [--limit N] [--json] [--scope ...] [--scope-id ID] [--include-narrower-scopes]
+  memory context-pack <goal...>     [--root <dir>] [--budget N] [--limit N] [--json] [--compact] [--scope ...] [--scope-id ID] [--include-narrower-scopes]
   memory context-pack-viewer <goal...> [--root <dir>] [--budget N] [--limit N] [--depth N] [--out <file>] [--scope ...] [--scope-id ID] [--include-narrower-scopes]
   memory recommend skills <task...> [--root <dir>] [--limit N] [--json] [--scope ...] [--scope-id ID] [--include-narrower-scopes]
   memory claim-check <assertion...> [--root <dir>] [--json]
@@ -376,7 +376,7 @@ Usage:
   memory handoff-viewer [focus...]  [--root <dir>] [--limit N] [--out <file>]
   memory frontier [focus...]        [--root <dir>] [--limit N] [--json]
   memory frontier-viewer [focus...] [--root <dir>] [--limit N] [--out <file>]
-  memory dashboard                 [--root <dir>] [--out <file>] [--stale-days N] [--json]
+  memory dashboard                 [--root <dir>] [--out <file>] [--stale-days N] [--json] [--compact]
   memory workbench                 [--root <dir>] [--out <file>] [--session <id>] [--limit N] [--json]
   memory session timeline           [--root <dir>] [--session <id>] [--limit N] [--json]
   memory session timeline-viewer    [--root <dir>] [--session <id>] [--limit N] [--out <file>]
@@ -475,7 +475,7 @@ Usage:
   memory conflicts                  [--root <dir>] [--include-resolved] [--json]
   memory supersede <old-rid> <new-rid> [--root <dir>] [--reason <text>]
   memory resolve-conflict <active-rid> <superseded-rid> [--root <dir>] [--reason <text>]
-  memory timeline <topic|rid>       [--root <dir>] [--include-audit] [--json]
+  memory timeline <topic|rid>       [--root <dir>] [--include-audit] [--json] [--compact]
   memory communities                [--root <dir>] [--no-cache] [--json]
   memory communities-viewer         [--root <dir>] [--no-cache] [--out <file>]
   memory community-digest           [--root <dir>] [--no-cache] [--json]
@@ -1398,6 +1398,7 @@ async function runRecall(args: ParsedArgs): Promise<void> {
             store: "graph",
             ranking: "hybrid-rrf",
             vector: diagnostics.vector,
+            compact: args.flags.compact === true,
           });
           return;
         }
@@ -1412,6 +1413,7 @@ async function runRecall(args: ParsedArgs): Promise<void> {
           store: "graph",
           ranking: "hybrid-rrf",
           vector: diagnostics.vector,
+          compact: args.flags.compact === true,
         });
         return;
       } catch {
@@ -1441,6 +1443,7 @@ async function runRecall(args: ParsedArgs): Promise<void> {
           store: "graph",
           ranking: "hybrid-rrf",
           vector: diagnostics.vector,
+          compact: args.flags.compact === true,
         });
         return;
       }
@@ -1455,6 +1458,7 @@ async function runRecall(args: ParsedArgs): Promise<void> {
         store: "graph",
         ranking: "hybrid-rrf",
         vector: diagnostics.vector,
+        compact: args.flags.compact === true,
       });
     } finally {
       await store.close();
@@ -1475,6 +1479,7 @@ async function runRecall(args: ParsedArgs): Promise<void> {
       query,
       store: "markdown",
       ranking: "term-count",
+      compact: args.flags.compact === true,
     });
     return;
   }
@@ -1488,6 +1493,7 @@ async function runRecall(args: ParsedArgs): Promise<void> {
     query,
     store: "markdown",
     ranking: "term-count",
+    compact: args.flags.compact === true,
   });
 }
 
@@ -1516,6 +1522,7 @@ function printRecallToon(opts: {
     contributed: number;
     reason?: string;
   };
+  compact?: boolean;
 }): void {
   const zero = opts.items.length === 0;
   console.log(
@@ -1536,6 +1543,7 @@ function printRecallToon(opts: {
             next: 'try `memory store "..."` to add governed context, then rerun recall',
           }
         : {},
+      compact: opts.compact === true,
     }),
   );
 }
@@ -1881,7 +1889,7 @@ async function runContextPack(args: ParsedArgs): Promise<void> {
       console.log(JSON.stringify(pack, null, 2));
       return;
     }
-    printContextPackToon(pack);
+    printContextPackToon(pack, { compact: args.flags.compact === true });
   } finally {
     await store.close();
   }
@@ -1900,7 +1908,7 @@ type ContextPackToonEntry = {
   expandHandle: string;
 };
 
-function printContextPackToon(pack: ContextPack): void {
+function printContextPackToon(pack: ContextPack, opts: { compact?: boolean } = {}): void {
   const rows: ContextPackToonEntry[] = pack.entries.map((entry) => ({
     section: entry.section,
     title: entry.title,
@@ -1950,6 +1958,7 @@ function printContextPackToon(pack: ContextPack): void {
             }
           : {}),
       },
+      compact: opts.compact === true,
     }),
   );
 }
@@ -2141,7 +2150,7 @@ async function runDashboard(args: ParsedArgs): Promise<void> {
       console.log(`  contract: ${artifact.contract.consumes}`);
       return;
     }
-    printDashboardToon(dashboard);
+    printDashboardToon(dashboard, { compact: args.flags.compact === true });
   } finally {
     await store.close();
   }
@@ -2155,7 +2164,7 @@ type DashboardToonSection = {
   detail: string;
 };
 
-function printDashboardToon(dashboard: MemoryOperationalDashboard): void {
+function printDashboardToon(dashboard: MemoryOperationalDashboard, opts: { compact?: boolean } = {}): void {
   const sections: DashboardToonSection[] = [
     {
       area: "stats",
@@ -2232,6 +2241,7 @@ function printDashboardToon(dashboard: MemoryOperationalDashboard): void {
             : []),
         ],
       },
+      compact: opts.compact === true,
     }),
   );
 }
@@ -7173,7 +7183,10 @@ async function runTimeline(args: ParsedArgs): Promise<void> {
       console.log(JSON.stringify(timeline, null, 2));
       return;
     }
-    printTimelineToon(timeline, { includeAudit: args.flags["include-audit"] === true });
+    printTimelineToon(timeline, {
+      includeAudit: args.flags["include-audit"] === true,
+      compact: args.flags.compact === true,
+    });
   } finally {
     await store.close();
   }
@@ -7495,7 +7508,7 @@ type TimelineToonEntry = {
   content: string;
 };
 
-function printTimelineToon(timeline: TopicTimeline, opts: { includeAudit: boolean }): void {
+function printTimelineToon(timeline: TopicTimeline, opts: { includeAudit: boolean; compact?: boolean }): void {
   const rows: TimelineToonEntry[] = timeline.entries.map((entry) => ({
     rid: entry.rid,
     status: entry.status,
@@ -7536,6 +7549,7 @@ function printTimelineToon(timeline: TopicTimeline, opts: { includeAudit: boolea
             }
           : {}),
       },
+      compact: opts.compact === true,
     }),
   );
 }
