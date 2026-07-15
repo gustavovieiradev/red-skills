@@ -20,6 +20,7 @@ import {
   type RecallRankingConfig,
   type RecallSignalProvenance,
 } from "./recall-ranking.js";
+import { encode, projectFields, type JsonValue } from "@reddb-io/toon";
 
 /** One Envelope user-hook execution surfaced on an attempt hit (issue #216). */
 export interface GraphRecallHookEntry {
@@ -320,13 +321,14 @@ export function renderSignalProvenance(
   signals: readonly RecallSignalProvenance[] | undefined,
 ): string[] {
   if (!signals || signals.length === 0) return [];
-  return [
-    `signal_provenance[${signals.length}]{source,rank,contribution}:`,
-    ...signals.map(
-      (signal) =>
-        `  ${signal.source},${signal.rank},${formatSignalContribution(signal.contribution)}`,
-    ),
-  ];
+  const rows = signals.map((signal) => ({
+    source: signal.source,
+    rank: signal.rank,
+    contribution: formatSignalContribution(signal.contribution),
+  })) satisfies Array<Record<string, JsonValue>>;
+  return encode({
+    signal_provenance: projectFields(rows, ["source", "rank", "contribution"]),
+  }).split("\n");
 }
 
 function formatSignalContribution(value: number): string {
