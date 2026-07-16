@@ -18,9 +18,9 @@
 //
 //   reconciler  reconcileClaim(records, self, opts) — PURE. Given the parsed claim
 //     records plus the claimant's own identity + comment id, returns won | lost
-//     and the winner. No I/O. Liveness/staleness is injected via opts.isStale
-//     (mirroring mirror.ts's `live` flag), so cross-host stale-claim recovery stays
-//     a pure function of injected facts.
+//     and the winner. No I/O. Owner liveness is injected via opts.isStale
+//     (mirroring mirror.ts's `live` flag), so claim recovery stays a pure
+//     function of supervisor verdicts supplied by the tracker layer.
 //
 //   orchestrator  acquireClaim(gh, self, issue, opts) — the thin impure shell with
 //     the GitHub client injected: post our claim → list claim markers → reconcile →
@@ -52,7 +52,7 @@ export interface ClaimRecord {
   kind: ClaimKind;
   /** Runner that posted the marker (advisory; for logs/observability). */
   runner?: string;
-  /** Server-assigned ISO createdAt (advisory; backs opts.isStale staleness). */
+  /** Server-assigned ISO createdAt (advisory; preserved for marker compatibility). */
   createdAt?: string;
 }
 
@@ -80,20 +80,18 @@ export interface ClaimDecision {
   winnerClaimId?: number;
   /** The timestamp attached to the winning claimant's latest marker, when known. */
   winnerCreatedAt?: string;
-  /** Stale cross-host claimants this decision RECOVERED — workers whose latest
-   * marker `isStale` rejected and who would otherwise have held an earlier claim
-   * than the winner. Empty unless a stale claim was superseded. Drives the single
-   * audit comment the orchestrator posts on a recovery (issue #627). */
+  /** Dead-owner claimants this decision RECOVERED — workers whose latest marker
+   * `isStale` rejected and who would otherwise have held an earlier claim than
+   * the winner. Empty unless a dead claim was superseded. Drives the single audit
+   * comment the orchestrator posts on a recovery (issue #627). */
   recovered: string[];
 }
 
 export interface ClaimReconcileOptions {
-  /** Injected liveness/staleness predicate (mirrors mirror.ts's `live` flag). A
-   * record for which this returns true is treated as a dead/expired claim and
-   * does not contend — this is how a stale cross-host winner is recovered. Pure:
-   * the caller computes staleness (TTL on createdAt, known-dead worker set, …)
-   * and injects the verdict so the reconciler stays I/O-free. Defaults to "never
-   * stale". */
+  /** Injected owner-liveness predicate (mirrors mirror.ts's `live` flag). A
+   * record for which this returns true is treated as a dead claim and does not
+   * contend. Pure: the caller computes the supervisor liveness verdict and
+   * injects it so the reconciler stays I/O-free. Defaults to "never dead". */
   isStale?: (record: ClaimRecord) => boolean;
 }
 
@@ -110,15 +108,15 @@ function escapeField(value: string): string {
   return value.replace(/[\s>]/g, "_");
 }
 
-/** Render the one-line audit comment posted when a claim recovered a stale
- * cross-host claim — the visible record that the issue returned to the
- * executable pool because an owner stopped refreshing (#627).
+/** Render the one-line audit comment posted when a claim recovered a dead-owner
+ * claim — the visible record that the issue returned to the executable pool
+ * because supervisor liveness proved the owner dead (#627/#1907).
  *
  * AFK runner improvement: when `deathFor` is supplied, it resolves each
  * recovered owner's death cause (from its process-safety diagnostic log, when
  * same-host and readable). Any resolved causes are appended so the comment
  * SAYS why the predecessor died — "uncatchable death (likely SIGKILL/OOM) at
- * ~HH:MM" — instead of only "stopped refreshing". This is what makes the
+ * ~HH:MM" when available. This is what makes the
  * Pattern 5 diagnostic actionable: the next worker's recovery comment carries
  * the forensic verdict. `deathFor` returning null (cross-host, no log, or
  * still-running) omits that owner's clause, so the comment degrades to the
@@ -130,8 +128,8 @@ export function renderRecoveryAudit(
 ): string {
   const who = recovered.map((w) => `\`${w}\``).join(", ");
   const base =
-    `🤖 AFK cross-host recovery: worker \`${self.worker}\` released ${recovered.length === 1 ? "a stale claim" : "stale claims"} ` +
-    `held by ${who} (owner stopped refreshing past the staleness window) and re-claimed this issue.`;
+    `🤖 AFK claim recovery: worker \`${self.worker}\` released ${recovered.length === 1 ? "a dead-owner claim" : "dead-owner claims"} ` +
+    `held by ${who} (supervisor liveness verdict: owner dead) and re-claimed this issue.`;
   if (!deathFor) return base;
   const causes = recovered
     .map((w) => {
@@ -236,8 +234,8 @@ interface Contender {
  *   2. A contending worker's order key is its EARLIEST `claim` id — re-posting a
  *      claim never improves your position, so a flapping claimant cannot jump the
  *      queue.
- *   3. Drop contenders the injected `isStale` predicate rejects (dead/expired) —
- *      this is cross-host stale-claim recovery.
+ *   3. Drop contenders the injected `isStale` predicate rejects (dead owner) —
+ *      this is supervisor-verdict claim recovery.
  *   4. `self` is always merged in at `self.commentId` (read-after-write may not
  *      yet reflect our own comment), so the decision is stable.
  *   5. The lowest surviving claimId wins. Ties (same id — impossible from GitHub,
@@ -294,14 +292,14 @@ export function reconcileClaim(
   });
 
   const contenders: Contender[] = [];
-  // Stale claimants that would have out-ordered us, captured so the orchestrator
-  // can post one audit comment recording the cross-host recovery (#627).
+  // Dead-owner claimants that would have out-ordered us, captured so the
+  // orchestrator can post one audit comment recording the recovery (#627).
   const stale: Contender[] = [];
   for (const [worker, f] of folds) {
     if (f.latestKind === "concede") continue; // withdrew
     if (f.earliestClaimId === null) continue; // only ever conceded — not a claim
     if (isStale(f.latestRecord)) {
-      stale.push({ worker, claimId: f.earliestClaimId }); // dead/expired — recovered
+      stale.push({ worker, claimId: f.earliestClaimId }); // dead owner — recovered
       continue;
     }
     contenders.push({ worker, claimId: f.earliestClaimId });
@@ -314,8 +312,8 @@ export function reconcileClaim(
   contenders.sort((a, b) => a.claimId - b.claimId || (a.worker < b.worker ? -1 : 1));
   const winner = contenders[0];
 
-  // A recovery is real only when we WIN and a stale claimant out-ordered us —
-  // i.e. it would have beaten the winner had it not aged out. A stale claim that
+  // A recovery is real only when we WIN and a dead-owner claimant out-ordered us —
+  // i.e. it would have beaten the winner had the owner been live. A dead claim that
   // posted AFTER the winner never held the issue, so it is not "recovered".
   const recovered =
     winner.worker === self.worker
@@ -354,11 +352,10 @@ export interface ClaimGh {
   postClaim(issue: number, body: string): Promise<number>;
   /** Read the issue's claim marker comments ({id, body, createdAt}). */
   listClaims(issue: number): Promise<RawClaimComment[]>;
-  /** Post a concede marker (best-effort; a failed concede is non-fatal — our
-   * claim simply ages out via staleness). */
+  /** Post a concede marker (best-effort; a failed concede is non-fatal). */
   concede(issue: number, body: string): Promise<void>;
   /** Post the single human-visible audit comment when this claim RECOVERED a
-   * stale cross-host claim (#627). Optional + best-effort: a failed audit does
+   * dead-owner claim (#627). Optional + best-effort: a failed audit does
    * not abandon the won claim. Omitted by legacy callers (no audit posted). */
   audit?(issue: number, body: string): Promise<void>;
 }
@@ -367,7 +364,7 @@ export interface AcquireClaimOptions extends ClaimReconcileOptions {
   /** Skip posting the human-facing concede when we lose (kept for tests). */
   suppressConcede?: boolean;
   /**
-   * AFK runner improvement: resolve a recovered stale-claim owner's death cause
+   * AFK runner improvement: resolve a recovered dead-claim owner's death cause
    * for the recovery audit comment (Pattern 5 — make the diagnostic
    * actionable). Injected so claim.ts stays pure; the runtime binds it to
    * `deathCauseForRecoveredWorker`. Absent → the comment keeps its original
@@ -402,7 +399,7 @@ export async function acquireClaim(
       renderClaimComment({ worker: self.worker, runner: self.runner }, "concede"),
     );
   }
-  // One audit comment when we won by recovering a stale cross-host claim (#627).
+  // One audit comment when we won by recovering a dead-owner claim (#627/#1907).
   // Best-effort: a failed audit never abandons the won claim.
   if (decision.verdict === "won" && decision.recovered.length > 0 && gh.audit) {
     try {
