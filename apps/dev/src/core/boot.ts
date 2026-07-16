@@ -47,7 +47,6 @@ import {
   planStaleClaimSweep,
   renderDeadClaimSweepAudit,
   renderStaleClaimSweepAudit,
-  resolveClaimReaperConfig,
   type ClaimedIssue,
 } from "./claim-staleness.js";
 import {
@@ -213,11 +212,11 @@ export interface BootLookups {
    * a claim-race loser's debris dir can never clobber the live winner's
    * `running` label back to ready-for-agent. */
   claimHolderAlive?: (issue: number) => Promise<boolean>;
-  /** Cross-host stale-claim sweep input (#627): every currently-claimed issue
+  /** Claim sweep input (#627/#1907): every currently-claimed issue
    * (projected `running`) with its parsed claim marker records. Optional: absent
    * → the sweep is a no-op (the same-host orphan sweep still covers local dead
-   * workers). When present, `runBoot` releases any issue held only by a claim
-   * whose owner stopped refreshing past the staleness window, cross-host. */
+   * workers). When present, `runBoot` releases only issues whose active claim
+   * owners have explicit supervisor liveness verdicts proving them dead. */
   claimedIssues?: () => Promise<ClaimedIssue[]>;
 }
 
@@ -405,8 +404,8 @@ export interface StragglerResult {
 }
 
 export interface StaleClaimSweepResult {
-  /** Issues released back to the executable pool because their cross-host owner
-   * stopped refreshing past the staleness window. */
+  /** Issues released back to the executable pool because liveness verdicts
+   * proved every active claim owner dead. */
   released: number[];
 }
 
@@ -461,7 +460,7 @@ export interface BootResult {
  *   7b. Spec sub-issue reconcile — attach missing native sub-issue edges and
  *                                  strip stale needs-slicing on sliced Specs.
  *   7c. stale-claim sweep   — planStaleClaimSweep; release each issue held only by
- *                             a cross-host claim that stopped refreshing (#627).
+ *                             owners with dead liveness verdicts (#1907).
  *                             No-op when `claimedIssues` is absent.
  *   9. reconcile sweep      — planReconcileSweep; validate-and-land each owned
  *                             parked-mechanical branch without re-running the agent
@@ -522,7 +521,7 @@ export async function runBoot(deps: BootDeps, options: BootOptions): Promise<Boo
   // ---- 7b. Spec sub-issue reconciler (#1739) ----
   const specSubIssueReconcile = await runSpecSubIssueReconcile(deps, options);
 
-  // ---- 7c. cross-host stale-claim sweep (#627) ----
+  // ---- 7c. claim sweep (#627/#1907) ----
   const staleClaimSweep = await runStaleClaimSweep(deps);
 
   // ---- 9. reconcile sweep (ADR 0055) ----
@@ -566,15 +565,12 @@ async function runDocsSweep(deps: BootDeps, options: BootOptions): Promise<DocsS
   return { plan };
 }
 
-/** Step 6a: cross-host stale-claim sweep (#627). List the currently-claimed
- * issues + their claim markers, plan a release for any held ONLY by a claim
- * whose owner stopped refreshing past the staleness window, and apply it: strip
- * `running`, restore `ready-for-agent`, and post one audit comment. A no-op when
- * `claimedIssues` is not wired (the same-host orphan sweep still covers local
- * dead workers). A live-but-slow worker is never released — the planner only
- * releases an issue with no live claim. Sequenced AFTER the unblock sweep and
- * BEFORE the reconcile sweep so a freshly-released issue rejoins the executable
- * pool for the next drain. */
+/** Step 6a: claim sweep (#627/#1907). List the currently-claimed issues + their
+ * claim markers, plan a release for any issue held ONLY by owners with explicit
+ * dead liveness verdicts, and apply it: strip `running`, restore
+ * `ready-for-agent`, and post one audit comment. A no-op when `claimedIssues` is
+ * not wired. Sequenced AFTER the unblock sweep and BEFORE the reconcile sweep so
+ * a freshly-released issue rejoins the executable pool for the next drain. */
 async function runStaleClaimSweep(deps: BootDeps): Promise<StaleClaimSweepResult> {
   if (!deps.lookups.claimedIssues) return { released: [] };
   let claimed: ClaimedIssue[];
@@ -584,8 +580,7 @@ async function runStaleClaimSweep(deps: BootDeps): Promise<StaleClaimSweepResult
     // Best-effort: a failed listing skips the sweep this boot, never aborting it.
     return { released: [] };
   }
-  const config = resolveClaimReaperConfig(deps.env ?? process.env, (key) => deps.config?.[key] ?? "");
-  const plans = planStaleClaimSweep(claimed, deps.nowS, config);
+  const plans = planStaleClaimSweep(claimed);
   const released: number[] = [];
   for (const p of plans) {
     try {
