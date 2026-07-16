@@ -37,7 +37,7 @@ import {
   LIVENESS_LANE_FILENAME,
   type LivenessVerdict,
 } from "@reddb-io/red-castle";
-import { liveIssueFromBranch, type BranchRef } from "../core/branch-cleanup.js";
+import type { BranchRef } from "../core/branch-cleanup.js";
 import { isRunner, type Runner } from "../types/runner.js";
 import * as ghx from "./gh.js";
 import * as gitx from "./git.js";
@@ -1920,13 +1920,6 @@ export async function buildBootDeps(ctx: RepoContext, options: BootOptions, nowS
   // ONE batched issue-state fetch backs every per-issue boot lookup below.
   const issueStates = await ghx.listIssueStates(ghCtx);
   const branchCache = await resolveBranchIssueCache(ghCtx, options, issueStates);
-  const liveBranchCommitByIssue = new Map<number, number>();
-  for (const ref of options.branches.remoteLiveRefs) {
-    const issue = liveIssueFromBranch(ref.branch);
-    if (issue === null || !Number.isFinite(ref.commitS)) continue;
-    const previous = liveBranchCommitByIssue.get(issue);
-    if (previous === undefined || ref.commitS! > previous) liveBranchCommitByIssue.set(issue, ref.commitS!);
-  }
   return {
     fs: {
       ensureDir: fsx.ensureDir,
@@ -1986,10 +1979,10 @@ export async function buildBootDeps(ctx: RepoContext, options: BootOptions, nowS
         needsTriage: () => ghx.countNeedsTriage(ghCtx),
         needsInfo: () => ghx.countNeedsInfo(ghCtx),
       },
-      // Cross-host stale-claim sweep input (#627): every OPEN issue projected as
-      // `running` (a held claim) with its parsed claim marker records. Derived
-      // from the batched issue-state map; the claim comments are read per-issue.
-      // A per-issue read failure drops that issue from the sweep (best-effort).
+      // Claim sweep input (#1907): every OPEN issue projected as `running`
+      // (a held claim) with its parsed claim marker records plus same-host
+      // supervisor liveness verdicts. A per-issue read failure drops that issue
+      // from the sweep (best-effort).
       claimedIssues: async () => {
         const claimed = [];
         const hostPrefix = hostFingerprintPrefix();
@@ -2015,7 +2008,6 @@ export async function buildBootDeps(ctx: RepoContext, options: BootOptions, nowS
               issue,
               records,
               deadOwners,
-              attemptBranchCommitS: liveBranchCommitByIssue.get(issue),
             });
           } catch {
             // best-effort: skip an issue whose claim comments cannot be read.
