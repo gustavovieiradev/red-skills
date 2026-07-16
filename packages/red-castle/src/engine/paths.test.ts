@@ -27,6 +27,24 @@ describe("EnginePaths", () => {
     );
     expect(paths.monitorsRoot).toBe(resolve(redRoot, "tmp", "monitors"));
     expect(paths.monitor("m1")).toBe(resolve(redRoot, "tmp", "monitors", "m1"));
+    expect(paths.supervisorLog("s1")).toBe(
+      resolve(redRoot, "tmp", "supervisors", "s1", "supervisor.log.toonl"),
+    );
+    expect(paths.supervisorState("s1")).toBe(
+      resolve(redRoot, "tmp", "supervisors", "s1", "state.toon"),
+    );
+    expect(paths.workerLog("wAB12")).toBe(
+      resolve(redRoot, "tmp", "workers", "wAB12", "worker.log.toonl"),
+    );
+    expect(paths.workerLiveness("wAB12")).toBe(
+      resolve(redRoot, "tmp", "workers", "wAB12", "liveness.toonl"),
+    );
+    expect(paths.workerState("wAB12")).toBe(
+      resolve(redRoot, "tmp", "workers", "wAB12", "state.toon"),
+    );
+    expect(paths.monitorLog("m1")).toBe(
+      resolve(redRoot, "tmp", "monitors", "m1", "monitor.log.toonl"),
+    );
   });
 
   it("resolves worker worktrees and every ratified worktree sub-lane", () => {
