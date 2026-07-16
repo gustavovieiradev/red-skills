@@ -93,7 +93,6 @@ import { resolveAttemptLoc, locMemoPath, type LocMemo } from "../core/loc-memo.j
 import { createActivityMeter } from "../core/activity-meter.js";
 import { DEFAULT_MAX_ITERATIONS } from "../core/execution.js";
 import type { AgentStreamEvent, AttemptBudget } from "../core/execution.js";
-import { makeStaleClaimPredicate, resolveClaimStalenessConfig } from "../core/claim-staleness.js";
 import { renderClaimComment } from "../core/claim.js";
 
 export interface RunOptions {
@@ -905,10 +904,10 @@ export function buildProcessDeps(
         try {
           await ghx.postClaimComment(ghCtx, issue, body);
         } catch {
-          // best-effort: a failed concede ages out via the staleness predicate.
+          // best-effort: a failed concede leaves the claim for supervisor recovery.
         }
       },
-      // One human-visible audit comment when we recover a stale cross-host claim
+      // One human-visible audit comment when we recover a dead-owner claim
       // (#627). Best-effort: a failed audit never abandons the won claim.
       audit: async (issue, body) => {
         try {
@@ -918,16 +917,22 @@ export function buildProcessDeps(
         }
       },
     },
-    // Cross-host stale-claim recovery (#627, ADR 0066): a claim whose owner
-    // stopped refreshing past `cadence × (tolerance + 1)` is presumed dead and
-    // released by this sweep. The clock is sampled once per issue at deps build;
-    // the policy comes from RED_AFK_CLAIM_REFRESH_S / RED_AFK_CLAIM_STALE_TOLERANCE.
-    claimStale: makeStaleClaimPredicate(
-      Math.floor(Date.now() / 1000),
-      resolveClaimStalenessConfig(process.env),
-    ),
+    // Claim-time recovery (#1907, ADR 0066): steal only with an explicit
+    // supervisor liveness verdict. Cross-host owners cannot be judged from this
+    // process; same-host owners are recoverable when their worker.pid is absent
+    // or no longer live.
+    claimStale: (record) => {
+      const hostPrefix = hostFingerprintPrefix();
+      if (!record.worker.startsWith(hostPrefix)) return false;
+      const workerId = record.worker.slice(hostPrefix.length);
+      if (!workerId) return false;
+      const pidPath = workerPidFile(paths.tmpDir, workerId);
+      if (!existsSync(pidPath)) return true;
+      const pid = Number(readFileSync(pidPath, "utf8").trim());
+      return !Number.isInteger(pid) || !isLivePid(pid);
+    },
     // AFK runner improvement (Pattern 5 — make the diagnostic actionable): when
-    // a stale-claim recovery releases a SAME-HOST predecessor, read its
+    // a dead-owner claim recovery releases a SAME-HOST predecessor, read its
     // process-safety diagnostic log and surface the death cause in the recovery
     // audit comment. The self identity only needs the host for the same-host
     // gate (a cross-host predecessor's log isn't on this filesystem).
