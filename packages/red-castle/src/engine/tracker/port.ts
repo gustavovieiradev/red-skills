@@ -15,10 +15,21 @@ export interface TrackerLabelMutation {
   readonly add: readonly string[];
 }
 
+export interface TrackerClaimRecord {
+  readonly commentId: number;
+  readonly worker: string;
+  readonly kind: "claim" | "concede";
+  readonly runner?: string;
+  readonly createdAt?: string;
+}
+
 export interface TrackerPort {
   listOpenIssuesByLabel(label: string): Promise<TrackerIssue[]>;
   isIssueClosed(issue: number): Promise<boolean>;
   editIssueLabels(issue: number, mutation: TrackerLabelMutation): Promise<void>;
   commentOnIssue(issue: number, body: string): Promise<void>;
   issueReference?(issue: number): Promise<TrackerIssueReference | undefined>;
+  postIssueClaim(issue: number, body: string): Promise<number>;
+  listIssueClaims(issue: number): Promise<TrackerClaimRecord[]>;
+  concedeIssueClaim(issue: number, body: string): Promise<void>;
 }
