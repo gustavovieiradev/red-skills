@@ -786,8 +786,7 @@ describe("runBoot Spec sub-issue reconciler (#1739)", () => {
   });
 });
 
-describe("runBoot cross-host stale-claim sweep (#627)", () => {
-  // A claim record from `worker` whose latest refresh was `ageS` ago.
+describe("runBoot claim sweep (#1907)", () => {
   const claim = (commentId: number, worker: string, ageS: number) => ({
     commentId,
     worker,
@@ -802,22 +801,8 @@ describe("runBoot cross-host stale-claim sweep (#627)", () => {
     expect(ghCalls.editLabels).toEqual([]);
   });
 
-  it("releases a cross-host stale claim back to ready-for-agent with one audit comment", async () => {
+  it("does not release an old claim without a dead-owner verdict", async () => {
     const claimedIssues = async () => [{ issue: 42, records: [claim(10, "host1:wXY", 99999)] }];
-    const { deps, ghCalls } = makeDeps({ claimedIssues });
-    const r = await runBoot(deps, options());
-    expect(r.staleClaimSweep).toEqual({ released: [42] });
-    expect(ghCalls.editLabels).toEqual([
-      { issue: 42, remove: ["running"], add: ["ready-for-agent"] },
-    ]);
-    expect(ghCalls.comment).toHaveLength(1);
-    expect(ghCalls.comment[0].issue).toBe(42);
-    expect(ghCalls.comment[0].body).toContain("host1:wXY");
-    expect(ghCalls.comment[0].body).toContain("cross-host stale-claim sweep");
-  });
-
-  it("never releases an issue still held by a live worker", async () => {
-    const claimedIssues = async () => [{ issue: 42, records: [claim(10, "host1:wXY", 120)] }];
     const { deps, ghCalls } = makeDeps({ claimedIssues });
     const r = await runBoot(deps, options());
     expect(r.staleClaimSweep).toEqual({ released: [] });
@@ -825,7 +810,7 @@ describe("runBoot cross-host stale-claim sweep (#627)", () => {
     expect(ghCalls.comment).toEqual([]);
   });
 
-  it("releases a fresh same-host ghost claim when worker.pid is dead", async () => {
+  it("releases a same-host ghost claim when worker.pid is dead", async () => {
     const claimedIssues = async () => [
       { issue: 42, records: [claim(10, "host1:wXY", 120)], deadOwners: ["host1:wXY"] },
     ];
@@ -839,45 +824,16 @@ describe("runBoot cross-host stale-claim sweep (#627)", () => {
     expect(ghCalls.comment[0].body).toContain("worker.pid");
   });
 
-  it("honours RED_AFK_CLAIM_REFRESH_S / tolerance from env", async () => {
-    // 700s old: stale under the default 1200s window? no. Tighten the window to
-    // 60×(1+0)=60s via env → 700s is now stale.
-    const claimedIssues = async () => [{ issue: 7, records: [claim(10, "h:w", 700)] }];
-    const { deps } = makeDeps({
-      claimedIssues,
-      env: { RED_AFK_CLAIM_REFRESH_S: "60", RED_AFK_CLAIM_STALE_TOLERANCE: "0" },
-    });
-    const r = await runBoot(deps, options());
-    expect(r.staleClaimSweep).toEqual({ released: [7] });
-  });
-
-  it("honours plugins.dev.afk claim-reaper grace config before releasing", async () => {
-    const claimedIssues = async () => [{ issue: 7, records: [claim(10, "h:w", 120)] }];
-    const { deps, ghCalls } = makeDeps({
-      env: { RED_AFK_CLAIM_REFRESH_S: "60", RED_AFK_CLAIM_STALE_TOLERANCE: "0" },
-      config: { "afk.claim_reaper.grace_s": "300" },
-      claimedIssues,
-    });
-    const r = await runBoot(deps, options());
-    expect(r.staleClaimSweep).toEqual({ released: [] });
-    expect(ghCalls.editLabels).toEqual([]);
-  });
-
-  it("protects a stale claim when the attempt branch has a recent commit", async () => {
-    const claimedIssues = async () => [
-      {
-        issue: 7,
-        records: [claim(10, "h:w", 9999)],
-        attemptBranchCommitS: NOW - 30,
-      },
-    ];
+  it("never releases an issue still held by a live worker", async () => {
+    const claimedIssues = async () => [{ issue: 42, records: [claim(10, "host1:wXY", 120)] }];
     const { deps, ghCalls } = makeDeps({ claimedIssues });
     const r = await runBoot(deps, options());
     expect(r.staleClaimSweep).toEqual({ released: [] });
     expect(ghCalls.editLabels).toEqual([]);
+    expect(ghCalls.comment).toEqual([]);
   });
 
-  it("still releases a stale claim when branch commits are older than the protection window", async () => {
+  it("ignores branch-age evidence without a dead-owner verdict", async () => {
     const claimedIssues = async () => [
       {
         issue: 7,
@@ -885,12 +841,10 @@ describe("runBoot cross-host stale-claim sweep (#627)", () => {
         attemptBranchCommitS: NOW - 31,
       },
     ];
-    const { deps } = makeDeps({
-      env: { RED_AFK_CLAIM_REAPER_RECENT_COMMIT_S: "30" },
-      claimedIssues,
-    });
+    const { deps, ghCalls } = makeDeps({ claimedIssues });
     const r = await runBoot(deps, options());
-    expect(r.staleClaimSweep).toEqual({ released: [7] });
+    expect(r.staleClaimSweep).toEqual({ released: [] });
+    expect(ghCalls.editLabels).toEqual([]);
   });
 
   it("tolerates a claimedIssues listing failure (best-effort no-op)", async () => {
@@ -903,10 +857,9 @@ describe("runBoot cross-host stale-claim sweep (#627)", () => {
   });
 
   it("removes running but does NOT add ready-for-agent when issue already has ready-for-human (#968)", async () => {
-    // Scenario: crash recovery wrote ready-for-human but left the running projection.
-    // The sweep must strip running without routing back to ready-for-agent, otherwise
-    // the next worker's preflight-blocker concede leaves running again → infinite spin.
-    const claimedIssues = async () => [{ issue: 55, records: [claim(10, "host1:wZZ", 99999)] }];
+    const claimedIssues = async () => [
+      { issue: 55, records: [claim(10, "host1:wZZ", 99999)], deadOwners: ["host1:wZZ"] },
+    ];
     const viewLabels = async (_issue: number) => ["running", "ready-for-human", "blocked:crashed"];
     const { deps, ghCalls } = makeDeps({ claimedIssues, viewLabels });
     const r = await runBoot(deps, options());
@@ -919,10 +872,9 @@ describe("runBoot cross-host stale-claim sweep (#627)", () => {
   });
 
   it("skips (no-op) when running is already gone at viewLabels time (race)", async () => {
-    // Batch fetch returned issue as running, but by the time viewLabels fires
-    // another sweep or recovery already removed running — skip to avoid a
-    // spurious ready-for-agent add.
-    const claimedIssues = async () => [{ issue: 77, records: [claim(10, "host1:wAA", 99999)] }];
+    const claimedIssues = async () => [
+      { issue: 77, records: [claim(10, "host1:wAA", 99999)], deadOwners: ["host1:wAA"] },
+    ];
     const viewLabels = async (_issue: number) => ["ready-for-human", "blocked:crashed"];
     const { deps, ghCalls } = makeDeps({ claimedIssues, viewLabels });
     const r = await runBoot(deps, options());
