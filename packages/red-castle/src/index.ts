@@ -140,4 +140,6 @@ export type {
   MergeToHeadBranchStrategy,
   NamedBranchStrategy,
 } from "./SandboxProvider.js";
+export * from "./engine/paths.js";
+export * from "./engine/writers.js";
 export * from "./engine/contracts/index.js";
