@@ -45,6 +45,13 @@ function fakeTracker(state: {
       const row = state.issues.get(issue);
       return row ? { number: issue, title: row.title, url: row.url } : undefined;
     },
+    async postIssueClaim() {
+      return 1;
+    },
+    async listIssueClaims() {
+      return [];
+    },
+    async concedeIssueClaim() {},
   };
 }
 
