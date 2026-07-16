@@ -190,20 +190,20 @@ describe("renderRecoveryAudit", () => {
     const one = renderRecoveryAudit({ worker: "h:me" }, ["dead:host"]);
     expect(one).toContain("h:me");
     expect(one).toContain("dead:host");
-    expect(one).toContain("a stale claim");
+    expect(one).toContain("a dead-owner claim");
     const many = renderRecoveryAudit({ worker: "h:me" }, ["a:1", "b:2"]);
-    expect(many).toContain("stale claims");
+    expect(many).toContain("dead-owner claims");
     expect(many).toContain("`a:1`, `b:2`");
   });
 
   // AFK runner improvement (Pattern 5): when a deathFor lookup resolves a
   // predecessor's cause, the audit appends it so the recovery comment SAYS why
-  // the worker died, not just that it "stopped refreshing".
+  // the worker died, alongside the supervisor liveness verdict.
   it("appends a predecessor death cause when deathFor resolves one", () => {
     const out = renderRecoveryAudit({ worker: "h:me" }, ["h:dead"], (w) =>
       w === "h:dead" ? "uncatchable death (likely SIGKILL/OOM)" : null,
     );
-    expect(out).toContain("stopped refreshing"); // base wording preserved
+    expect(out).toContain("supervisor liveness verdict: owner dead");
     expect(out).toContain("Predecessor cause (process-safety diagnostic)");
     expect(out).toContain("`h:dead`: uncatchable death (likely SIGKILL/OOM)");
   });
@@ -284,7 +284,7 @@ describe("acquireClaim orchestration", () => {
     expect(gh.conceded).toHaveLength(0);
   });
 
-  it("recovers a stale cross-host claim and posts exactly one audit comment (#627)", async () => {
+  it("recovers a dead-owner claim and posts exactly one audit comment (#627)", async () => {
     // A dead worker holds an earlier claim (id 1); our post gets id 2. We win
     // only because the staleness predicate drops the dead claim — and one audit
     // comment records the recovery.
@@ -295,7 +295,8 @@ describe("acquireClaim orchestration", () => {
     expect(d.verdict).toBe("won");
     expect(d.recovered).toEqual(["dead:host"]);
     expect(gh.audited).toHaveLength(1);
-    expect(gh.audited[0]).toContain("cross-host recovery");
+    expect(gh.audited[0]).toContain("claim recovery");
+    expect(gh.audited[0]).toContain("supervisor liveness verdict: owner dead");
     expect(gh.audited[0]).toContain("dead:host");
     expect(gh.conceded).toHaveLength(0);
   });
