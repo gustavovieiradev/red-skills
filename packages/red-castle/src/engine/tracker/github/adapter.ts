@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { TrackerIssue, TrackerPort, TrackerLabelMutation, TrackerIssueReference } from "../port.js";
+import { parseTrackerClaimRecords, type RawTrackerClaimComment } from "../claim.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,12 +23,25 @@ interface GhIssueViewRow {
   readonly number?: unknown;
   readonly title?: unknown;
   readonly url?: unknown;
+  readonly comments?: unknown;
+}
+
+interface GhApiIssueCommentRow {
+  readonly id?: unknown;
 }
 
 export function createGitHubTrackerAdapter(options: GitHubTrackerAdapterOptions = {}): TrackerPort {
   const gh = options.gh ?? defaultGhExec;
   const withRepo = (args: string[]): string[] =>
     options.repo ? [...args, "--repo", options.repo] : args;
+  const postClaimComment = async (issue: number, body: string): Promise<number> => {
+    const stdout = await gh(withRepo(["api", "repos/:owner/:repo/issues/" + String(issue) + "/comments", "-f", `body=${body}`]));
+    const row = parseJson<GhApiIssueCommentRow>(stdout);
+    if (typeof row.id !== "number") {
+      throw new Error("GitHub claim comment response did not include a numeric id");
+    }
+    return row.id;
+  };
 
   return {
     async listOpenIssuesByLabel(label) {
@@ -71,6 +85,17 @@ export function createGitHubTrackerAdapter(options: GitHubTrackerAdapterOptions 
         url: typeof row.url === "string" ? row.url : undefined,
       } satisfies TrackerIssueReference;
     },
+    async postIssueClaim(issue, body) {
+      return postClaimComment(issue, body);
+    },
+    async listIssueClaims(issue) {
+      const stdout = await gh(withRepo(["issue", "view", String(issue), "--json", "comments"]));
+      const row = parseJson<GhIssueViewRow>(stdout);
+      return parseTrackerClaimRecords(parseRawClaimComments(row.comments));
+    },
+    async concedeIssueClaim(issue, body) {
+      await postClaimComment(issue, body);
+    },
   };
 }
 
@@ -112,6 +137,22 @@ function parseLabels(value: unknown): string[] {
     }
   }
   return labels;
+}
+
+function parseRawClaimComments(value: unknown): RawTrackerClaimComment[] {
+  if (!Array.isArray(value)) return [];
+  const comments: RawTrackerClaimComment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as { id?: unknown; body?: unknown; createdAt?: unknown };
+    if (typeof row.id !== "number" || typeof row.body !== "string") continue;
+    comments.push({
+      id: row.id,
+      body: row.body,
+      createdAt: typeof row.createdAt === "string" ? row.createdAt : undefined,
+    });
+  }
+  return comments;
 }
 
 function parseJson<T>(stdout: string): T {
