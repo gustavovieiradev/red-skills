@@ -22,10 +22,16 @@ export interface EnginePaths {
   readonly tmpRoot: string;
   readonly supervisorsRoot: string;
   readonly supervisor: (id: string) => string;
+  readonly supervisorLog: (id: string) => string;
+  readonly supervisorState: (id: string) => string;
   readonly workersRoot: string;
   readonly worker: (workerId: string) => string;
+  readonly workerLog: (workerId: string) => string;
+  readonly workerLiveness: (workerId: string) => string;
+  readonly workerState: (workerId: string) => string;
   readonly monitorsRoot: string;
   readonly monitor: (id: string) => string;
+  readonly monitorLog: (id: string) => string;
   readonly worktreesRoot: string;
   readonly workerWorktreesRoot: string;
   readonly workerWorktree: (
@@ -55,10 +61,17 @@ export function createEnginePaths(redRoot: string): EnginePaths {
     tmpRoot,
     supervisorsRoot,
     supervisor: (id) => resolve(supervisorsRoot, id),
+    supervisorLog: (id) => resolve(supervisorsRoot, id, "supervisor.log.toonl"),
+    supervisorState: (id) => resolve(supervisorsRoot, id, "state.toon"),
     workersRoot,
     worker: (workerId) => resolve(workersRoot, workerId),
+    workerLog: (workerId) => resolve(workersRoot, workerId, "worker.log.toonl"),
+    workerLiveness: (workerId) =>
+      resolve(workersRoot, workerId, "liveness.toonl"),
+    workerState: (workerId) => resolve(workersRoot, workerId, "state.toon"),
     monitorsRoot,
     monitor: (id) => resolve(monitorsRoot, id),
+    monitorLog: (id) => resolve(monitorsRoot, id, "monitor.log.toonl"),
     worktreesRoot,
     workerWorktreesRoot,
     workerWorktree: (workerId, ticketId) =>
