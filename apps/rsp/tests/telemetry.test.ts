@@ -23,6 +23,7 @@ import {
 } from "../src/telemetry.js";
 import { DEFAULT_RSP_BYTE_BUDGET, DEFAULT_RSP_TTL_DAYS, RSP_ELISION_COLLECTION } from "../src/elision-store.js";
 import { tokenSavingsEstimate } from "../src/pricing.js";
+import { resolveRspConfig } from "../src/config.js";
 import { resolveResidentPaths } from "../src/resident-client.js";
 import { sendResidentRequest } from "../src/resident-protocol.js";
 import { runResidentServer } from "../src/resident-server.js";
@@ -51,24 +52,34 @@ afterEach(async () => {
 
 describe("rsp telemetry spool", () => {
   it("prices estimated token savings with a documented confidence range", () => {
-    expect(tokenSavingsEstimate(1000, true, "gpt-5")).toMatchObject({
+    expect(tokenSavingsEstimate(1000, true, "claude-sonnet-5-intro")).toMatchObject({
       tokens_saved: 1000,
       tokens_saved_estimated: true,
       token_estimate_range_pct: 0.25,
       tokens_saved_low: 750,
       tokens_saved_high: 1250,
-      dollars_saved_estimate_usd: 0.00125,
-      dollars_saved_low_usd: 0.000938,
-      dollars_saved_high_usd: 0.001563,
-      pricing_model_family: "gpt-5",
+      dollars_saved_estimate_usd: 0.002,
+      dollars_saved_low_usd: 0.0015,
+      dollars_saved_high_usd: 0.0025,
+      pricing_model_family: "claude-sonnet-5-intro",
+      pricing_row_label: "Claude Sonnet 5 input, intro pricing through 2026-08-31",
     });
-    expect(tokenSavingsEstimate(1000, false, "gpt-5")).toMatchObject({
+    expect(tokenSavingsEstimate(1000, false, "claude-sonnet-5-intro")).toMatchObject({
       tokens_saved: 1000,
       tokens_saved_estimated: false,
       tokens_saved_low: null,
       tokens_saved_high: null,
-      dollars_saved_estimate_usd: 0.00125,
+      dollars_saved_estimate_usd: 0.002,
     });
+  });
+
+  it("keeps control holdout opt-in and bounded by config", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, ".red", "config.yaml"), "rsp:\n  enabled: true\n  holdoutShare: 0.02\n", "utf8");
+    expect(resolveRspConfig(root, {}).holdoutShare).toBe(0.02);
+    expect(resolveRspConfig(root, { RSP_HOLDOUT_SHARE: "0.03" }).holdoutShare).toBe(0.03);
+    expect(resolveRspConfig(root, { RSP_HOLDOUT_SHARE: "2" }).holdoutShare).toBe(0);
+    expect(resolveRspConfig(root, {}).holdoutShare).toBeLessThanOrEqual(0.05);
   });
 
   it("appends TOONL rows without throwing when the target is unavailable", async () => {
@@ -1045,6 +1056,29 @@ describe("rsp telemetry spool", () => {
         wrapper_ms: 100,
         store_open_count: 0,
       });
+      await db.kv(RSP_TELEMETRY_INVOCATIONS_COLLECTION).put("holdout", {
+        created_at: "2026-07-08T12:20:00.000Z",
+        command: "git log --brief",
+        holdout: true,
+        holdout_share: 0.02,
+        elided: false,
+        raw_bytes: 1600,
+        emitted_bytes: 1600,
+        tokens_raw: 400,
+        tokens_emitted: 400,
+        estimated: true,
+        wrapper_ms: 1,
+        store_open_count: 0,
+      });
+      await db.kv(RSP_ACCOUNTING_EVENTS_COLLECTION).put("show:git-log", {
+        created_at: "2026-07-08T12:21:00.000Z",
+        event_type: "show",
+        command: "rsp show",
+        handle_family: "git log",
+        hit: true,
+        raw_bytes: 1000,
+        emitted_bytes: 1000,
+      });
       await db.kv(RSP_TELEMETRY_DEGRADATIONS_COLLECTION).put("degraded", {
         created_at: "2026-07-08T12:16:00.000Z",
         command: "git --version",
@@ -1058,7 +1092,7 @@ describe("rsp telemetry spool", () => {
         data_days: 9,
         label: "window: 28d, data: 9d",
         empty: false,
-        invocations: 3,
+        invocations: 4,
         degradations: 1,
       });
       expect(report.latency.global).toEqual({
@@ -1081,18 +1115,34 @@ describe("rsp telemetry spool", () => {
       expect(report.throughput.peak_minute).toEqual({ minute: "2026-07-01T10:00", requests: 2 });
       expect(report.throughput.hour_weekday_heatmap).toContainEqual({ weekday: "wed", hour: 10, requests: 2 });
       expect(report.savings.weekly_tokens_saved).toEqual([
-        { week_start: "2026-06-29", tokens_saved: 900, wow_delta_pct: null },
-        { week_start: "2026-07-06", tokens_saved: 250, wow_delta_pct: -72.22 },
+        { week_start: "2026-06-29", tokens_saved: 900, tokens_saved_estimated: false, token_count_source: "tokenizer", wow_delta_pct: null },
+        { week_start: "2026-07-06", tokens_saved: 250, tokens_saved_estimated: true, token_count_source: "byte-estimate", wow_delta_pct: -72.22 },
       ]);
       expect(report.savings.tokens).toMatchObject({
         tokens_saved: 1150,
         tokens_saved_estimated: true,
+        token_count_source: "mixed",
         tokens_saved_low: 862,
         tokens_saved_high: 1438,
-        dollars_saved_estimate_usd: 0.001438,
+        dollars_saved_estimate_usd: 0.0023,
+      });
+      expect(report.savings.holdout).toMatchObject({
+        enabled: true,
+        observed_share: 0.25,
+        configured_share: 0.02,
+        samples: 1,
+        measured_tokens_saved_mean: expect.any(Number),
+        measured_tokens_saved_ci95_low: expect.any(Number),
+        measured_tokens_saved_ci95_high: expect.any(Number),
       });
       expect(report.savings.elision_rate).toBe(0.67);
-      expect(report.savings.top_commands_by_tokens_saved[0]).toMatchObject({ command_family: "git log", invocations: 2, tokens_saved: 1150 });
+      expect(report.savings.top_commands_by_tokens_saved[0]).toMatchObject({
+        command_family: "git log",
+        invocations: 2,
+        tokens_saved: 1150,
+        tokens_saved_estimated: true,
+        token_count_source: "mixed",
+      });
       expect(report.savings.top_commands_by_invocation_count[0]).toMatchObject({ command_family: "git log", invocations: 2 });
       expect(report.savings.single_biggest_elision).toMatchObject({ command_family: "git log", tokens_saved: 900 });
       expect(report.health.degradation_timeline).toEqual([
@@ -1100,6 +1150,13 @@ describe("rsp telemetry spool", () => {
       ]);
       expect(report.health.degradations_by_reason).toEqual([{ reason: "wrapper failed", count: 1 }]);
       expect(report.health).toMatchObject({ cold_boots: 1, warm_hits: 2 });
+      expect(report.mining.recovery_usage_by_family).toEqual([
+        { command_family: "git log", shows: 1, hits: 1, misses: 0, hit_rate: 1 },
+      ]);
+      expect(report.mining.degradation_clusters).toEqual([
+        { command_family: "git --version", reason: "wrapper failed", count: 1 },
+      ]);
+      expect(report.mining.threshold_tuning_suggestions[0]).toContain("git log");
     } finally {
       await db.close();
     }
