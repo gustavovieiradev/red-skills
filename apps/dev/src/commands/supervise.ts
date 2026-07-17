@@ -86,6 +86,8 @@ export function fleetHeartbeatState(hb: FleetHeartbeat): string {
     epoch: hb.epoch,
     ...(hb.lastProgressEpoch > 0 ? { last_progress_epoch: hb.lastProgressEpoch } : {}),
     runner: hb.runner,
+    target: hb.target,
+    shrink_mode: hb.shrinkMode,
     ...(hb.bundleVersion ? { bundle_version: hb.bundleVersion } : {}),
     ready_for_agent: hb.readyForAgent,
     slots: {
@@ -138,6 +140,8 @@ async function writeCastleSupervisorSnapshot(
       current: {
         epoch: hb.epoch,
         last_progress_epoch: hb.lastProgressEpoch,
+        target: hb.target,
+        shrink_mode: hb.shrinkMode,
         ready_for_agent: hb.readyForAgent,
         slots: {
           busy: hb.slotsBusy,
@@ -279,6 +283,7 @@ function readResizeRequest(path: string): ElasticResizeRequest | null {
       target?: unknown;
       shrink_mode?: unknown;
       shrinkMode?: unknown;
+      runner?: unknown;
     };
     if (!Number.isInteger(parsed.target) || (parsed.target as number) < 0) return null;
     const rawMode = parsed.shrink_mode ?? parsed.shrinkMode;
@@ -289,6 +294,9 @@ function readResizeRequest(path: string): ElasticResizeRequest | null {
     return {
       target: parsed.target as number,
       ...(shrinkMode !== undefined ? { shrinkMode } : {}),
+      ...(typeof parsed.runner === "string" && parsed.runner.trim().length > 0
+        ? { runner: parsed.runner }
+        : {}),
     };
   } catch {
     return null;
@@ -434,6 +442,9 @@ function buildSupervisorDeps(
 ): SupervisorDeps {
   const bundle = process.argv[1];
   const bundleVersion = readBuildInfo("dev").version;
+  const runtimeConfig = {
+    runner,
+  };
   const now = () => Math.floor(Date.now() / 1000);
   const supervisorWriter = createCastleLaneWriters(
     createEnginePaths(join(root, ".red")),
@@ -473,14 +484,16 @@ function buildSupervisorDeps(
   // (gap 4). Operator-set RED_AFK_* vars (RED_AFK_SKIP_PERF, etc) and the rest of
   // the environment survive. RED_AFK_RUNNER is re-added explicitly below so the
   // worker's detection cascade pins the supervisor's runner.
-  const workerEnv = buildWorkerEnv(process.env, runner);
+  const workerEnvForCurrentRunner = (): Record<string, string> =>
+    buildWorkerEnv(process.env, runtimeConfig.runner);
 
   return {
     proc: {
       spawnSlot: async (slot, policy) => {
         // Forward the Spec/Ticket filter + runner-swap policy so a supervised
         // fleet honours the same filter a single `/afk run` would (gap 5).
-        const runArgs = ["run", "--once", "--runner", runner, ...slotArgs];
+        const activeRunner = runtimeConfig.runner;
+        const runArgs = ["run", "--once", "--runner", activeRunner, ...slotArgs];
         // Each slot gets its own log file so the circuit-trip sweep can
         // resolve which worker IDs ran in the slot via parseWorkerIdsFromLog
         // (mirrors spawn_slot's per-slot slot_log in supervisor.sh).
@@ -490,7 +503,7 @@ function buildSupervisorDeps(
         rmSync(retireFile, { force: true });
         const child = spawn(process.execPath, [bundle, ...runArgs], {
           cwd: root,
-          env: buildSlotEnv(workerEnv, slot, policy, retireFile),
+          env: buildSlotEnv(workerEnvForCurrentRunner(), slot, policy, retireFile),
           detached: true,
           stdio: ["ignore", slotFd, slotFd],
         });
@@ -506,8 +519,9 @@ function buildSupervisorDeps(
         return { pid, spawnEpoch: now() };
       },
       spawnReconcileWorker: async (slot, candidate) => {
+        const activeRunner = runtimeConfig.runner;
         const runArgs = [
-          "run", "--once", "--runner", runner,
+          "run", "--once", "--runner", activeRunner,
           "--reconcile-issue", String(candidate.issue),
           ...slotArgs,
         ];
@@ -515,7 +529,7 @@ function buildSupervisorDeps(
         const slotFd = openSync(slotLogFile, "a");
         const child = spawn(process.execPath, [bundle, ...runArgs], {
           cwd: root,
-          env: buildSlotEnv(workerEnv, slot, undefined, slotRetirePath(statePath, slot)),
+          env: buildSlotEnv(workerEnvForCurrentRunner(), slot, undefined, slotRetirePath(statePath, slot)),
           detached: true,
           stdio: ["ignore", slotFd, slotFd],
         });
@@ -668,6 +682,10 @@ function buildSupervisorDeps(
     },
     attemptBranchHead: (branch) => gitx.branchHead({ cwd: root }, branch),
     resizeRequest: async () => readResizeRequest(afkPaths(root).supervisorResizePath),
+    applyRuntimeConfig: (next) => {
+      runtimeConfig.runner = next.runner;
+      hookEnvBase.RED_AFK_RUNNER = next.runner;
+    },
     // Fleet-scoped lifecycle hooks (#833). Commands are resolved from the same
     // .red/hooks/<point>/ + library layering as worker hooks. Best-effort:
     // a dispatch failure is returned to the caller; the caller catches and logs.
@@ -703,6 +721,8 @@ function buildSupervisorDeps(
             extra: {
               scope: "fleet",
               runner: stamped.runner,
+              target: String(stamped.target),
+              shrink_mode: stamped.shrinkMode,
               bundle_version: stamped.bundleVersion ?? null,
               ready_for_agent: String(stamped.readyForAgent),
               slots_busy: String(stamped.slotsBusy),
