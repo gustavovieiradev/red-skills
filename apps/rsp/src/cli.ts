@@ -154,7 +154,7 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
   const residentPaths = resolveResidentPaths(process.cwd());
   if (args.command === "proxy") {
     const { runProxy } = await import("./proxy.js");
-    return await runProxy(args.positional, { telemetryRoot: residentPaths.rootDir, level: args.level });
+    return await runProxy(args.positional, { telemetryRoot: residentPaths.rootDir, level: args.level, holdoutShare: config.holdoutShare });
   }
   if (args.command === "status" || args.command === "sweep") {
     const { residentRegistryStatus, sweepResidentRegistry } = await import("./resident-client.js");
@@ -255,6 +255,7 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (args.command === "git") {
+      if (shouldControlHoldout(args, config)) return await runControlHoldout(args, residentPaths.rootDir, config.holdoutShare);
       fireAndForget(warmResidentStore());
       if (isFastGitStatus(args.positional)) {
         const started = process.hrtime.bigint();
@@ -273,6 +274,7 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (args.command === "gh") {
+      if (shouldControlHoldout(args, config)) return await runControlHoldout(args, residentPaths.rootDir, config.holdoutShare);
       fireAndForget(warmResidentStore());
       const { runGhWrapper } = await import("./gh-wrapper.js");
       const store = new LazyRspElisionStore(() => openResidentStore(false));
@@ -283,6 +285,7 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (args.command === "vitest" || args.command === "cargo") {
+      if (shouldControlHoldout(args, config)) return await runControlHoldout(args, residentPaths.rootDir, config.holdoutShare);
       fireAndForget(warmResidentStore());
       const { runTestWrapper } = await import("./test-wrapper.js");
       const store = new LazyRspElisionStore(() => openResidentStore(false));
@@ -293,6 +296,7 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (args.command === "cat") {
+      if (shouldControlHoldout(args, config)) return await runControlHoldout(args, residentPaths.rootDir, config.holdoutShare);
       fireAndForget(warmResidentStore());
       const { runCatWrapper } = await import("./cat-wrapper.js");
       const store = new LazyRspElisionStore(() => openResidentStore(false));
@@ -307,6 +311,7 @@ async function main(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (args.command === "exec") {
+      if (shouldControlHoldout(args, config)) return await runControlHoldout(args, residentPaths.rootDir, config.holdoutShare);
       fireAndForget(warmResidentStore());
       const { runExecWrapper } = await import("./exec-wrapper.js");
       const store = new LazyRspElisionStore(() => openResidentStore(false));
@@ -944,6 +949,43 @@ async function degradeToPassthrough(reason: string, argv: readonly string[], err
   return status;
 }
 
+async function runControlHoldout(args: ParsedArgs, telemetryRoot: string, holdoutShare: number): Promise<number> {
+  const started = process.hrtime.bigint();
+  const status = await passthrough(args.positional);
+  const wrapperMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+  const { appendTelemetryEvent, RSP_ACCOUNTING_EVENTS_COLLECTION } = await import("./telemetry.js");
+  fireAndForget(appendTelemetryEvent(telemetryRoot, {
+    collection: RSP_ACCOUNTING_EVENTS_COLLECTION,
+    event_type: "invocation",
+    ts: new Date().toISOString(),
+    command: telemetryCommand(args),
+    command_class: args.command ?? "unknown",
+    wrapper: args.command,
+    loss: args.level,
+    holdout: true,
+    holdout_share: holdoutShare,
+    elided: false,
+    raw_bytes: 0,
+    emitted_bytes: 0,
+    wrapper_ms: wrapperMs,
+  }));
+  return status;
+}
+
+function shouldControlHoldout(args: ParsedArgs, config: RspRuntimeConfig): boolean {
+  if (!isWrapperCommand(args.command) || args.command === "gh-api-json") return false;
+  const share = config.holdoutShare;
+  if (!Number.isFinite(share) || share <= 0) return false;
+  const bucket = Math.floor(Date.now() / 60_000);
+  const input = `${bucket}:${telemetryCommand(args)}`;
+  let hash = 2166136261;
+  for (const char of input) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 10_000) < Math.floor(share * 10_000);
+}
+
 function wrapperFailureIdentity(
   fallbackReason: string,
   argv: readonly string[],
@@ -1307,9 +1349,11 @@ function emptyTelemetryStats(windowDays: number): RspTelemetryStats {
       dollars_saved_estimate_usd: 0,
       dollars_saved_low_usd: null,
       dollars_saved_high_usd: null,
-      pricing_model_family: "gpt-5",
-      pricing_input_usd_per_million_tokens: 1.25,
-      pricing_note: "estimate derived from byte-based token estimate when token counts are estimated",
+      pricing_model_family: "claude-sonnet-5-intro",
+      pricing_input_usd_per_million_tokens: 2,
+      pricing_row_label: "Claude Sonnet 5 input, intro pricing through 2026-08-31",
+      pricing_note: "Anthropic input-token pricing row; token figures are labeled as tokenizer-derived or byte-estimated",
+      token_count_source: "tokenizer",
       daily_tokens_saved: [],
       top_commands: [],
     },
