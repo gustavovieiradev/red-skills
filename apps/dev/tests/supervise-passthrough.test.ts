@@ -152,6 +152,11 @@ describe("formatBootSweepResult — supervisor boot log shape (#623)", () => {
   it("summarises each sweep's counts on a passing precheck", () => {
     const result: BootResult = {
       precheck: { ok: true, warnings: [] },
+      operationalProbes: {
+        schema_version: "red.dev.operational_probes.v1",
+        status: "green",
+        probes: [],
+      },
       bootstrap: { ok: true },
       orphanCleanup: { removed: ["a", "b"], restored: [7], kept: ["c"], legacyWiped: [], claimsReleased: [] },
       attemptCap: { reclaimed: ["x"] },
@@ -160,7 +165,7 @@ describe("formatBootSweepResult — supervisor boot log shape (#623)", () => {
       straggler: { counts: { unlabeled: 2, needsTriage: 1, needsInfo: 0 }, warn: true },
     };
     expect(formatBootSweepResult(result)).toBe(
-      "boot sweeps complete: orphans removed=2 restored=1 kept=1 | attempt-cap reclaimed=1 | " +
+      "boot sweeps complete: probes=green orphans removed=2 restored=1 kept=1 | attempt-cap reclaimed=1 | " +
         "branches snapshot=1 remote=0 local=2 | docs-sweep clean files=0 | unblocked=1 | stragglers unlabeled=2 triage=1 info=0",
     );
   });
