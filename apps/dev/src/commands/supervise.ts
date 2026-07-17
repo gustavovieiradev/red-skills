@@ -7,7 +7,7 @@
 // native — no bash anywhere in the loop.
 
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, readFileSync, writeFileSync, writeSync, rmSync, renameSync } from "node:fs";
+import { existsSync, openSync, closeSync, readFileSync, writeFileSync, rmSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readBuildInfo } from "@reddb-io/build-info";
 import {
@@ -21,7 +21,7 @@ import {
   type SpawnPolicy,
   type SupervisorDeps,
 } from "../core/supervisor.js";
-import { appendRecordToonlRow } from "../core/jsonl-log.js";
+import { appendRecordToonl } from "../core/jsonl-log.js";
 import {
   afkPaths,
   resolveRepoSlug,
@@ -58,6 +58,7 @@ import {
   writeCastleStateSnapshot,
 } from "@reddb-io/red-castle/engine";
 import { encodeDevSnapshotToon } from "../core/toon-snapshot.js";
+import { decode as decodeToon } from "@reddb-io/toon";
 
 function isAlive(pid: number): boolean {
   try {
@@ -274,7 +275,8 @@ function slotRetirePath(statePath: string, slot: number): string {
 
 function readResizeRequest(path: string): ElasticResizeRequest | null {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+    const raw = readFileSync(path, "utf8");
+    const parsed = (path.endsWith(".toon") ? decodeToon(raw) : JSON.parse(raw)) as {
       target?: unknown;
       shrink_mode?: unknown;
       shrinkMode?: unknown;
@@ -423,7 +425,6 @@ function buildSupervisorDeps(
   root: string,
   tmpDir: string,
   slotLogsDir: string,
-  logFd: number,
   firehosePath: string,
   statePath: string,
   runner: string,
@@ -434,14 +435,14 @@ function buildSupervisorDeps(
   const bundle = process.argv[1];
   const bundleVersion = readBuildInfo("dev").version;
   const now = () => Math.floor(Date.now() / 1000);
-  // Per-tick / boot liveness line into afk-supervisor.log (best-effort). Shared
-  // by `log` and the pre-spawn boot sweeps so both land in the supervisor log.
+  // Per-tick / boot liveness line into supervisor.log.toonl (best-effort).
+  // Shared by `log` and the pre-spawn boot sweeps so both land in the structured
+  // supervisor firehose. No human prose log is dual-written.
   const logLine = (line: string): void => {
-    try {
-      writeSync(logFd, `[${new Date().toISOString()}] ${line}\n`);
-    } catch {
-      // best-effort: a log-write failure must never affect the loop.
-    }
+    void appendRecordToonl(firehosePath, "supervisor", line, {
+      ts: new Date().toISOString(),
+      fields: { worker: "fleet" },
+    }).catch(() => undefined);
   };
   // Fleet hook resolution: library defaults-dir + project .red/hooks/ layering,
   // same convention as worker hooks (ADR 0026, #830, #833).
@@ -503,7 +504,7 @@ function buildSupervisorDeps(
           cwd: root,
           env: buildSlotEnv(workerEnv, slot, undefined, slotRetirePath(statePath, slot)),
           detached: true,
-          stdio: ["ignore", logFd, logFd],
+          stdio: ["ignore", "ignore", "ignore"],
         });
         child.on("exit", (code) => {
           // null means the process was killed by a signal; treat as non-clean (1).
@@ -617,7 +618,7 @@ function buildSupervisorDeps(
     wake: buildStateChangeWake(join(tmpDir, "workers")),
     // Env for the bounded stalled re-claim cap (#402): RED_AFK_RETRY_STALLED.
     recoveryEnv: process.env,
-    // Per-tick liveness line into afk-supervisor.log (best-effort). Makes a
+    // Per-tick liveness line into supervisor.log.toonl (best-effort). Makes a
     // healthy fleet's heartbeat — and a wedged one's silence — observable.
     log: logLine,
     // Fleet supervisor owns the boot (#623): runSupervisor calls this ONCE before
@@ -681,7 +682,7 @@ function buildSupervisorDeps(
         // best-effort: castle state mirroring must not affect the supervisor.
       }
       try {
-        await appendRecordToonlRow(firehosePath, "heartbeat", fleetHeartbeatMessage(stamped), {
+        await appendRecordToonl(firehosePath, "heartbeat", fleetHeartbeatMessage(stamped), {
           ts: stamped.ts,
           fields: {
             worker: "fleet",
@@ -736,13 +737,12 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
   const stateAfk = dirname(paths.supervisorPidPath);
   const pidFile = paths.supervisorPidPath;
   const stopFile = paths.supervisorStopPath;
-  const logFile = paths.supervisorLogPath;
   const firehoseFile = paths.fleetFirehosePath;
   const stateFile = paths.fleetStatePath;
   const slotLogsDir = slotLogDir(tmp);
 
-  // One-time boot migration: relocate any legacy `.red/tmp` durable artifacts to
-  // the state tier before the supervisor reads/writes them (issue #1685).
+  // One-time boot migration: relocate any legacy `.red/tmp` / state artifacts to
+  // their canonical state or supervisor tmp lane before reading/writing them.
   await import("../runtime/red-path-migration.js").then((m) => m.migrateLegacyDevPaths(root)).catch(() => undefined);
   await import("../runtime/fs.js").then((m) => m.ensureDir(tmp));
   await import("../runtime/fs.js").then((m) => m.ensureDir(stateAfk));
@@ -768,7 +768,6 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
   if (existsSync(stopFile)) rmSync(stopFile, { force: true });
   rmSync(paths.supervisorResizePath, { force: true });
 
-  const logFd = openSync(logFile, "a");
   const values = loadConfig(paths.configPath, { warn: () => undefined });
   const config = resolveSupervisorConfig(process.env, (key) => getConfig(values, key));
   const state = initSupervisorState(config.target);
@@ -784,7 +783,7 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
     RED_AFK_RUNNER: config.runner,
     ...(repo.length > 0 ? { RED_AFK_REPO: repo } : {}),
   };
-  const deps = buildSupervisorDeps(root, tmp, slotLogsDir, logFd, firehoseFile, stateFile, config.runner, ghCtx, slotArgs, hookEnvBase);
+  const deps = buildSupervisorDeps(root, tmp, slotLogsDir, firehoseFile, stateFile, config.runner, ghCtx, slotArgs, hookEnvBase);
 
   const stopRequested = (): boolean => existsSync(stopFile);
 
