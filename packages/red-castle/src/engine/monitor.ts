@@ -239,6 +239,11 @@ export interface FleetState {
   lastProgressEpoch?: number;
   /** Runner the fleet was launched with (default "" for pre-#407 state files). */
   runner: string;
+  /** Currently applied worker-count target. May differ from slotsTotal while
+   * drain-then-retire convergence is still pending. */
+  target?: number;
+  /** Currently applied shrink behavior. */
+  shrinkMode?: "hard-kill" | "drain-then-retire";
   /** Dev bundle version the running supervisor was launched from. */
   bundleVersion?: string;
   /** Newest compatible dev bundle seen in the local cache. */
