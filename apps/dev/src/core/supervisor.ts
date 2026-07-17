@@ -28,6 +28,7 @@ import { renderLogTailToon } from "./envelope-emit.js";
 import { dispose } from "./disposition.js";
 import { type RecoveryEnv } from "./recovery.js";
 import { BootHaltError } from "./boot.js";
+import { OperationalProbeHaltError } from "./operational-probes.js";
 import {
   LABEL_READY,
   LABEL_RUNNING,
@@ -2366,7 +2367,7 @@ export async function runSupervisor(
     try {
       await deps.bootSweeps();
     } catch (err) {
-      if (err instanceof BootHaltError) {
+      if (err instanceof BootHaltError || err instanceof OperationalProbeHaltError) {
         deps.log?.(`boot sweeps halted: ${err.message}`);
         return;
       }
