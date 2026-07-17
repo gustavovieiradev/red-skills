@@ -2036,7 +2036,7 @@ describe("rsp cli", () => {
     expect(statsPayload.savings.emitted_bytes).toBeGreaterThan(0);
     expect(statsPayload.savings.tokens_saved_display).toMatch(/(?:[1-9]\d*|[1-9]\d*-[1-9]\d* .*)/);
     expect(statsPayload.savings.dollars_saved_estimate_usd_display).toContain("$");
-    expect(statsPayload.savings.pricing_model_family).toBe("gpt-5");
+    expect(statsPayload.savings.pricing_model_family).toBe("claude-sonnet-5-intro");
     expect(statsPayload.savings.top_commands).toContainEqual(expect.objectContaining({ command: "git log" }));
     expect(statsPayload.health.degradations).toBe(1);
     expect(statsPayload.health.degradation_rate_display).toBe("0.3333");
@@ -2115,7 +2115,7 @@ describe("rsp cli", () => {
     expect(decoded.window.requested_days).toBe(28);
     expect(decoded.window.invocations).toBe(2);
     expect(decoded.window.degradations).toBe(1);
-    expect(decoded.savings.tokens).toMatchObject({ tokens_saved_low: 1350, tokens_saved_high: 2250, dollars_saved_estimate_usd: 0.00225 });
+    expect(decoded.savings.tokens).toMatchObject({ tokens_saved_low: 1350, tokens_saved_high: 2250, dollars_saved_estimate_usd: 0.0036 });
     expect(decoded.savings.single_biggest_elision).toMatchObject({ command_family: "git log", tokens_saved: 1800 });
   }, 120_000);
 
