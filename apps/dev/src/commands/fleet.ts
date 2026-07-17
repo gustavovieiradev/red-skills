@@ -11,6 +11,7 @@ import { buildWatchdogIO } from "../runtime/watchdog-io.js";
 import { spawnSupervisor } from "../runtime/supervisor-spawn.js";
 import { isLivePid, killTreeAndWait } from "../runtime/kill-tree.js";
 import { reapStaleSupervisorState } from "../runtime/supervisor-state.js";
+import { encodeDevSnapshotToon } from "../core/toon-snapshot.js";
 
 export interface FleetLaunchResult {
   status: "launched" | "resized";
@@ -114,7 +115,7 @@ async function writeResizeRequest(path: string, target: number, shrinkMode: Elas
   const tmp = `${path}.tmp`;
   await writeFile(
     tmp,
-    `${JSON.stringify({ target, shrink_mode: shrinkMode }, null, 2)}\n`,
+    encodeDevSnapshotToon({ target, shrink_mode: shrinkMode }),
     "utf8",
   );
   await rename(tmp, path);
@@ -123,9 +124,10 @@ async function writeResizeRequest(path: string, target: number, shrinkMode: Elas
 export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStream = process.stdout): Promise<FleetStopResult> {
   const paths = afkPaths(root);
   const stateAfk = dirname(paths.supervisorPidPath);
+  const legacyCastleState = dirname(paths.historyPath);
   const pidFile = paths.supervisorPidPath;
   const stopFile = join(dirname(pidFile), "afk-supervisor.stop");
-  const supervisor = await reapStaleSupervisorState(stateAfk, isLivePid);
+  const supervisor = await reapStaleSupervisorState([stateAfk, legacyCastleState], isLivePid);
   if (supervisor.status === "stale") {
     stdout.write(`no fleet running (stale supervisor files — cleaned).\n`);
     return { status: "stale", ...(supervisor.pid !== undefined ? { pid: supervisor.pid } : {}) };
@@ -161,7 +163,7 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
     return { status: "stopped", pid };
   }
   stdout.write(
-    `✗ supervisor pid=${pid} survived SIGKILL; still live — see .red/state/castle/afk-supervisor.log.\n`,
+    `✗ supervisor pid=${pid} survived SIGKILL; still live — see .red/tmp/supervisors/fleet/supervisor.log.toonl.\n`,
   );
   return { status: "timeout", pid };
 }
@@ -171,6 +173,7 @@ export async function launchFleet(args: readonly string[], root = process.cwd(),
   if (!Number.isInteger(parsed.target) || parsed.target < 0) throw new Error("fleet target must be a non-negative integer");
   const paths = afkPaths(root);
   const stateAfk = dirname(paths.supervisorPidPath);
+  const legacyCastleState = dirname(paths.historyPath);
   await mkdir(paths.tmpDir, { recursive: true });
   await mkdir(stateAfk, { recursive: true });
   // One-time boot migration: relocate legacy `.red/tmp` durable artifacts to the
@@ -178,7 +181,7 @@ export async function launchFleet(args: readonly string[], root = process.cwd(),
   await migrateLegacyDevPaths(root).catch(() => undefined);
   const pidFile = paths.supervisorPidPath;
   const logFile = paths.supervisorLogPath;
-  const supervisor = await reapStaleSupervisorState(stateAfk, isLivePid);
+  const supervisor = await reapStaleSupervisorState([stateAfk, legacyCastleState], isLivePid);
   if (supervisor.status === "stale") {
     stdout.write(`cleaned stale supervisor files before fleet launch.\n`);
   }
@@ -233,13 +236,13 @@ export async function launchFleet(args: readonly string[], root = process.cwd(),
     } catch {
       // ignore
     }
-    throw new Error(`fleet launch failed: supervisor pid file did not appear. log: .red/state/castle/afk-supervisor.log\n${tail}`);
+    throw new Error(`fleet launch failed: supervisor pid file did not appear. log: .red/tmp/supervisors/fleet/supervisor.log.toonl\n${tail}`);
   }
 
   stdout.write(`🚀 fleet launched (supervisor pid=${supervisorPid}, target=${parsed.target})\n`);
-  stdout.write(`   log:   .red/state/castle/afk-supervisor.log\n`);
+  stdout.write(`   log:   .red/tmp/supervisors/fleet/supervisor.log.toonl\n`);
   stdout.write(`   stop:  /dev:afk fleet stop\n`);
-  stdout.write(`   monitor loop unavailable in this runner; run /dev:afk monitor or tail .red/state/castle/afk-supervisor.log manually.\n`);
+  stdout.write(`   monitor loop unavailable in this runner; run /dev:afk monitor or tail .red/tmp/supervisors/fleet/supervisor.log.toonl manually.\n`);
   return { status: "launched", pid: supervisorPid, target: parsed.target, log: logFile };
 }
 
