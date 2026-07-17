@@ -16,6 +16,7 @@ export const DEFAULT_RSP_TELEMETRY_DRAIN_INTERVAL_MS = 30_000;
 export const DEFAULT_RSP_TELEMETRY_DRAIN_TIMEOUT_MS = 2_000;
 export const DEFAULT_RSP_IDLE_MS = 5 * 60_000;
 export const MIN_RSP_IDLE_MS = 5_000;
+export const MAX_RSP_HOLDOUT_SHARE = 0.05;
 
 export interface RspRuntimeConfig {
   enabled: boolean;
@@ -30,6 +31,7 @@ export interface RspRuntimeConfig {
   telemetryDrainTimeoutMs: number;
   idleMs: number;
   heavyGitByteThreshold: number;
+  holdoutShare: number;
 }
 
 export function resolveRspConfig(cwd: string, env: NodeJS.ProcessEnv, explicitStoreUri?: string): RspRuntimeConfig {
@@ -71,6 +73,11 @@ export function resolveRspConfig(cwd: string, env: NodeJS.ProcessEnv, explicitSt
     numericEnv(env.RSP_HEAVY_GIT_BYTE_THRESHOLD) ?? readNumericYamlPath(yaml, "rsp.heavyGitByteThreshold"),
     DEFAULT_RSP_HEAVY_GIT_BYTE_THRESHOLD,
   );
+  const holdoutShare = boundedShare(
+    numericEnv(env.RSP_HOLDOUT_SHARE) ?? readNumericYamlPath(yaml, "rsp.holdoutShare"),
+    0,
+    MAX_RSP_HOLDOUT_SHARE,
+  );
   const storeRoot = resolveResidentPaths(cwd).rootDir;
   // Honor the transition window: open the legacy tmp-tier store if it still
   // exists and setup has not yet migrated it to the state tier.
@@ -90,6 +97,7 @@ export function resolveRspConfig(cwd: string, env: NodeJS.ProcessEnv, explicitSt
     telemetryDrainTimeoutMs,
     idleMs,
     heavyGitByteThreshold,
+    holdoutShare,
   };
 }
 
@@ -113,4 +121,9 @@ function numericEnv(value: string | undefined): number | undefined {
   if (value == null || value.trim() === "") return undefined;
   const n = Number(value);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function boundedShare(value: number | undefined, fallback: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > max) return fallback;
+  return value;
 }
