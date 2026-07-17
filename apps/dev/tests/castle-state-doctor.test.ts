@@ -112,8 +112,16 @@ describe("auditCastleStateLane", () => {
       checked: { castleLanePresent: false, legacyLanePresent: true },
     });
 
-    await mkdir(join(root, ".red", "state", "castle"), { recursive: true });
-    await writeFile(join(root, ".red", "state", "castle", "afk-supervisor.pid"), "456\n", "utf8");
+    const paths = createEnginePaths(join(root, ".red"));
+    await appendCastleHistoryRecord(paths.castleHistory, {
+      ts: "2026-07-17T00:00:00.000Z",
+      epoch: 1784246400,
+      worker: "wA",
+      issue: 1963,
+      event: "done",
+      duration_s: 12,
+      runner: "codex",
+    });
 
     const report = await auditCastleStateLane(root);
 
@@ -127,6 +135,29 @@ describe("auditCastleStateLane", () => {
         canonicalFix: "run the dev durable path migration entrypoint during boot (`red-path-migration`)",
         fixGate: "delegate",
       },
+    ]);
+  });
+
+  it("flags live supervisor artifacts and dishonest extensions in state/castle", async () => {
+    const root = await repo();
+    const castle = join(root, ".red", "state", "castle");
+    await mkdir(castle, { recursive: true });
+    await writeFile(join(castle, "afk-supervisor.pid"), "123\n", "utf8");
+    await writeFile(join(castle, "afk-supervisor.log.toonl"), "[0]{ts,msg}:\n", "utf8");
+    await writeFile(join(castle, "monitor-log-cursors.json"), "{}", "utf8");
+
+    const report = await auditCastleStateLane(root);
+
+    expect(report.status).toBe("error");
+    expect(report.findings.map((finding) => finding.kind)).toEqual([
+      "castle-live-artifact",
+      "castle-live-artifact",
+      "castle-live-artifact",
+    ]);
+    expect(report.findings.map((finding) => finding.path)).toEqual([
+      ".red/state/castle/afk-supervisor.log.toonl",
+      ".red/state/castle/afk-supervisor.pid",
+      ".red/state/castle/monitor-log-cursors.json",
     ]);
   });
 });
