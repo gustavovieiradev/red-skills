@@ -286,6 +286,7 @@ export function formatBootSweepResult(result: BootResult): string {
     return `boot sweeps: precheck FAILED (${formatPreconditionFailure(result.precheck)}) — workers will run their own precheck`;
   }
   const oc = result.orphanCleanup;
+  const probes = result.operationalProbes;
   const ac = result.attemptCap;
   const bc = result.branchCleanup;
   const ds = result.docsSweep?.plan;
@@ -293,6 +294,7 @@ export function formatBootSweepResult(result: BootResult): string {
   const st = result.straggler;
   return (
     "boot sweeps complete: " +
+    `probes=${probes?.status ?? "green"} ` +
     `orphans removed=${oc?.removed.length ?? 0} restored=${oc?.restored.length ?? 0} kept=${oc?.kept.length ?? 0}` +
     ` | attempt-cap reclaimed=${ac?.reclaimed.length ?? 0}` +
     ` | branches snapshot=${bc?.snapshotReaped.length ?? 0} remote=${bc?.remoteLiveReaped.length ?? 0} local=${bc?.localLiveReaped.length ?? 0}` +
