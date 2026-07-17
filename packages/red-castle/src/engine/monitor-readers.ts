@@ -246,6 +246,12 @@ function fleetFromSupervisorSnapshot(
     epoch,
     lastProgressEpoch: numberField(current, "last_progress_epoch") || undefined,
     runner: snapshot.runner ?? stringField(current, "runner"),
+    target: numberField(current, "target") || undefined,
+    shrinkMode:
+      stringField(current, "shrink_mode") === "hard-kill" ||
+      stringField(current, "shrink_mode") === "drain-then-retire"
+        ? stringField(current, "shrink_mode") as "hard-kill" | "drain-then-retire"
+        : undefined,
     bundleVersion: snapshot.bundle_version ?? stringField(current, "bundle_version"),
     readyForAgent: numberField(
       current,
