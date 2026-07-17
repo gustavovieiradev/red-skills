@@ -108,19 +108,25 @@ async function writeFleetSnapshot(
   root: string,
   over: Record<string, unknown> = {},
 ): Promise<void> {
-  const dir = dirname(afkPaths(root).supervisorPidPath);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "afk-supervisor.pid"), `${process.pid}\n`, "utf8");
+  const paths = afkPaths(root);
+  await mkdir(dirname(paths.supervisorPidPath), { recursive: true });
+  await mkdir(dirname(paths.fleetStatePath), { recursive: true });
+  await writeFile(paths.supervisorPidPath, `${process.pid}\n`, "utf8");
   await writeFile(
-    join(dir, "afk-supervisor.state.json"),
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      epoch: Math.floor(Date.now() / 1000),
+    paths.fleetStatePath,
+    encode({
+      kind: "supervisor",
+      id: "fleet",
+      version: 1,
+      updated_at: new Date().toISOString(),
       runner: "codex",
-      ready_for_agent: 2,
-      slots: { busy: 1, free: 0, total: 1, parked: 0 },
-      spawns_this_tick: 0,
-      ...over,
+      current: {
+        epoch: Math.floor(Date.now() / 1000),
+        ready_for_agent: 2,
+        slots: { busy: 1, free: 0, total: 1, parked: 0 },
+        spawns_this_tick: 0,
+        ...over,
+      },
     }),
     "utf8",
   );
