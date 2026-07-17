@@ -9,6 +9,7 @@ import {
   type PrecheckFacts,
   type ReconcileBootRunner,
 } from "../src/core/boot.js";
+import { OperationalProbeHaltError } from "../src/core/operational-probes.js";
 import type { AttemptDir } from "../src/core/reclaim.js";
 import type { BranchRef, IssueMeta } from "../src/core/branch-cleanup.js";
 import type { UnblockCandidate, ReconcileSweepCandidate } from "../src/core/boot-sweep.js";
@@ -57,14 +58,10 @@ describe("precheck", () => {
     });
   });
 
-  it("rejects an https remote, naming the offending url", () => {
+  it("leaves https remote enforcement to the operational probe registry", () => {
     expect(
       precheck(facts({ remoteUrls: ["https://github.com/reddb-io/red-skills.git"] })),
-    ).toEqual({
-      ok: false,
-      failed: "https-remote-forbidden",
-      detail: "https://github.com/reddb-io/red-skills.git",
-    });
+    ).toEqual({ ok: true, warnings: [] });
   });
 
   it("allows an https remote in a CI lane (allowHttpsRemote) — GHA checkout is token-https", () => {
@@ -305,6 +302,17 @@ describe("runBoot precheck short-circuit", () => {
     expect(result.orphanCleanup).toBeUndefined();
     expect(calls).toEqual([]);
   });
+
+  it("refuses before bootstrap when an operational probe is red", async () => {
+    const { deps, calls } = makeDeps();
+    await expect(
+      runBoot(
+        deps,
+        options({ precheck: facts({ remoteUrls: ["https://github.com/reddb-io/red-skills.git"] }) }),
+      ),
+    ).rejects.toThrow(OperationalProbeHaltError);
+    expect(calls).toEqual([]);
+  });
 });
 
 describe("runBoot Docs Sweep", () => {
@@ -416,6 +424,7 @@ describe("runBoot skipSweeps — supervisor-owned boot (#623)", () => {
 
     // The result carries only precheck + bootstrap; every sweep field is absent.
     expect(result.precheck.ok).toBe(true);
+    expect(result.operationalProbes?.status).toBe("green");
     expect(result.bootstrap).toEqual({ ok: true });
     expect(result.orphanCleanup).toBeUndefined();
     expect(result.attemptCap).toBeUndefined();
