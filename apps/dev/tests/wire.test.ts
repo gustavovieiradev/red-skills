@@ -157,11 +157,10 @@ describe("afkPaths", () => {
     expect(p.stateDir).toBe("/repo/.red/state");
     expect(p.workersRoot).toBe("/repo/.red/tmp/workers");
     expect(p.historyPath).toBe("/repo/.red/state/castle/history.toonl");
-    // Durable supervisor artifacts now live in the castle state lane.
-    expect(p.fleetStatePath).toBe("/repo/.red/state/castle/afk-supervisor.state.json");
-    expect(p.fleetFirehosePath).toBe("/repo/.red/state/castle/afk-supervisor.log.toonl");
-    expect(p.monitorLogCursorPath).toBe("/repo/.red/state/castle/monitor-log-cursors.json");
-    expect(p.supervisorPidPath).toBe("/repo/.red/state/castle/afk-supervisor.pid");
+    expect(p.fleetStatePath).toBe("/repo/.red/state/castle/supervisors/fleet/state.toon");
+    expect(p.fleetFirehosePath).toBe("/repo/.red/tmp/supervisors/fleet/supervisor.log.toonl");
+    expect(p.monitorLogCursorPath).toBe("/repo/.red/tmp/monitors/default/log-cursors.toon");
+    expect(p.supervisorPidPath).toBe("/repo/.red/tmp/supervisors/fleet/afk-supervisor.pid");
     expect(p.runnerCircuitDir).toBe("/repo/.red/state/castle/runner-circuit");
     expect(p.statuslineCachePath).toBe("/repo/.red/state/statusline/statusline-cache.toon");
     expect(p.statuslineRepoCachePath).toBe("/repo/.red/state/statusline/statusline-repo-cache.toon");
@@ -507,16 +506,19 @@ describe("collectMonitorInputs", () => {
     try {
       const path = afkPaths(root).fleetStatePath;
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(
-        path,
-        JSON.stringify({
-          ts: "2026-05-30T11:00:00Z",
+      await writeCastleStateSnapshot(path, {
+        kind: "supervisor",
+        id: "fleet",
+        supervisor_id: "fleet",
+        version: 1,
+        updated_at: "2026-05-30T11:00:00Z",
+        current: {
           epoch: 1780138800,
           ready_for_agent: 9,
           slots: { busy: 1, free: 2, total: 3, parked: 0 },
           spawns_this_tick: 1,
-        }),
-      );
+        },
+      });
 
       await expect(readFleetState(path)).resolves.toMatchObject({
         epoch: 1780138800,
