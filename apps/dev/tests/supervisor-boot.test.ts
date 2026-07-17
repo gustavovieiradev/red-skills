@@ -7,6 +7,10 @@
 // runs without the environmental heap pressure of the full supervisor suite.
 
 import { describe, expect, it, vi } from "vitest";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   runSupervisor,
   initSupervisorState,
@@ -15,6 +19,7 @@ import {
   type SupervisorDeps,
 } from "../src/core/supervisor.js";
 import { OperationalProbeHaltError, type OperationalProbeReport } from "../src/core/operational-probes.js";
+import { buildSupervisorBootSweeps } from "../src/commands/supervise.js";
 import type { ProcessSnapshotEntry } from "../src/core/reaper-signal.js";
 import type { LivenessVerdict } from "@reddb-io/red-castle";
 
@@ -83,6 +88,79 @@ function makeDeps(over: DepsOverrides = {}): {
     ...(hasBoot ? { bootSweeps } : {}),
   };
   return { deps, spawnSlot, bootSweeps, log, order };
+}
+
+function writeExecutable(path: string, body: string): void {
+  writeFileSync(path, body, "utf8");
+  chmodSync(path, 0o755);
+}
+
+function makeBootFixtureRepo(): { root: string; restore: () => void } {
+  const root = mkdtempSync(join(tmpdir(), "afk-operational-probe-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin, { recursive: true });
+
+  writeExecutable(
+    join(bin, "gh"),
+    `#!/bin/sh
+case "$1 $2" in
+  "--version ") echo "gh version 2.0.0"; exit 0 ;;
+  "auth status") exit 0 ;;
+  "repo view") echo "reddb-io/red-skills"; exit 0 ;;
+  "issue list") echo "[]"; exit 0 ;;
+esac
+echo "[]" 
+exit 0
+`,
+  );
+  writeExecutable(
+    join(bin, "pnpm"),
+    `#!/bin/sh
+echo "11.5.0"
+exit 0
+`,
+  );
+  writeExecutable(
+    join(bin, "git"),
+    `#!/bin/sh
+if [ "$1" = "remote" ] && [ "$2" = "-v" ]; then
+  echo "origin https://github.com/reddb-io/red-skills.git (fetch)"
+  echo "origin https://github.com/reddb-io/red-skills.git (push)"
+  exit 0
+fi
+if [ "$1" = "ls-remote" ]; then
+  exit 0
+fi
+exec /usr/bin/git "$@"
+`,
+  );
+
+  execFileSync("/usr/bin/git", ["init", "-b", "main"], { cwd: root });
+  execFileSync("/usr/bin/git", ["config", "user.email", "fixture@example.com"], { cwd: root });
+  execFileSync("/usr/bin/git", ["config", "user.name", "Fixture"], { cwd: root });
+  writeFileSync(join(root, "README.md"), "fixture\n", "utf8");
+  execFileSync("/usr/bin/git", ["add", "README.md"], { cwd: root });
+  execFileSync("/usr/bin/git", ["commit", "-m", "init"], { cwd: root });
+  execFileSync("/usr/bin/git", ["remote", "add", "origin", "https://github.com/reddb-io/red-skills.git"], { cwd: root });
+
+  const oldPath = process.env.PATH;
+  const oldGithubActions = process.env.GITHUB_ACTIONS;
+  const oldLane = process.env.RED_AFK_LANE;
+  process.env.PATH = `${bin}:${oldPath ?? ""}`;
+  delete process.env.GITHUB_ACTIONS;
+  delete process.env.RED_AFK_LANE;
+
+  return {
+    root,
+    restore: () => {
+      process.env.PATH = oldPath;
+      if (oldGithubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = oldGithubActions;
+      if (oldLane === undefined) delete process.env.RED_AFK_LANE;
+      else process.env.RED_AFK_LANE = oldLane;
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
 }
 
 describe("runSupervisor — supervisor owns the boot (#623)", () => {
@@ -161,6 +239,31 @@ describe("runSupervisor — supervisor owns the boot (#623)", () => {
     const line = log.mock.calls.map((c) => String(c[0])).join("\n");
     expect(line).toContain("Git remotes must use SSH for AFK");
     expect(line).toContain("Canonical fix");
+  });
+
+  it("live boot invocation refuses a fixture repo with a red operational probe", async () => {
+    const fixture = makeBootFixtureRepo();
+    try {
+      const bootLog: string[] = [];
+      const { deps, spawnSlot, log } = makeDeps({
+        bootSweeps: buildSupervisorBootSweeps(
+          fixture.root,
+          "reddb-io/red-skills",
+          (line) => bootLog.push(line),
+        ),
+      });
+      const state = initSupervisorState(1);
+
+      await runSupervisor(state, deps, config({ target: 1 }), () => true);
+
+      expect(spawnSlot).not.toHaveBeenCalled();
+      expect(bootLog).toEqual([]);
+      const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(line).toContain("Git remotes must use SSH for AFK");
+      expect(line).toContain("Canonical fix");
+    } finally {
+      fixture.restore();
+    }
   });
 
   it("spawns normally when no bootSweeps is wired (back-compat)", async () => {
