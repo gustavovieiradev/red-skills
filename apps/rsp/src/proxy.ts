@@ -4,6 +4,7 @@ import { appendTelemetryEvent, RSP_DECISIONS_COLLECTION, RSP_TELEMETRY_INVOCATIO
 export interface ProxyRunOptions {
   telemetryRoot: string;
   level?: ProxyLossLevel;
+  holdoutShare?: number;
 }
 
 export type ProxyLossLevel = "lossless" | "brief" | "terse";
@@ -41,6 +42,25 @@ export async function runProxy(argv: readonly string[], options: ProxyRunOptions
   try {
     commandLine = parseProxyCommandLine(argv);
     if (process.env.RSP_PROXY_FAIL_INTERNAL === "1") throw new Error("forced proxy failure");
+    if (shouldControlHoldout(commandLine, options.holdoutShare ?? 0)) {
+      const status = await runShellVerbatim(commandLine);
+      const wrapperMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+      await appendTelemetryEvent(options.telemetryRoot, {
+        collection: RSP_TELEMETRY_INVOCATIONS_COLLECTION,
+        ts: new Date().toISOString(),
+        command: commandLine,
+        wrapper: "proxy",
+        loss: options.level ?? "lossless",
+        holdout: true,
+        holdout_share: options.holdoutShare ?? 0,
+        elided: false,
+        raw_bytes: 0,
+        emitted_bytes: 0,
+        wrapper_ms: wrapperMs,
+        accounting_recorded: false,
+      });
+      return status;
+    }
     const rewritten = rewriteProxyCommandLine(commandLine, options.level ?? "lossless");
     routedCommandLine = rewritten.commandLine;
     segmentMatches = rewritten.matches;
@@ -70,6 +90,17 @@ export async function runProxy(argv: readonly string[], options: ProxyRunOptions
     accounting_recorded: false,
   });
   return status;
+}
+
+function shouldControlHoldout(command: string, share: number): boolean {
+  if (!Number.isFinite(share) || share <= 0) return false;
+  const bucket = Math.floor(Date.now() / 60_000);
+  let hash = 2166136261;
+  for (const char of `${bucket}:${command}`) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) % 10_000) < Math.floor(share * 10_000);
 }
 
 export function rewriteProxyCommandLine(commandLine: string, level: ProxyLossLevel = "lossless"): {
