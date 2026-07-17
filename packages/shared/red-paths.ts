@@ -189,6 +189,17 @@ export function workersDir(root: string): string {
   return join(tmpDir(root), "workers");
 }
 
+/** Live supervisor process artifacts: `.red/tmp/supervisors`. */
+export function supervisorsDir(root: string): string {
+  return join(tmpDir(root), "supervisors");
+}
+
+/** One live supervisor's process-control lane: `.red/tmp/supervisors/<id>`. */
+export function supervisorDir(root: string, id: string): string {
+  if (!id) throw new Error("supervisor id is required");
+  return join(supervisorsDir(root), id);
+}
+
 /** The `/go` dispatch worker lane: `.red/tmp/go-workers`. */
 export function goWorkersDir(root: string): string {
   return join(tmpDir(root), "go-workers");
@@ -235,6 +246,17 @@ export function scratchDir(root: string): string {
 /** Dev-runtime failure diagnostics (age-capped): `.red/tmp/diagnostics`. */
 export function diagnosticsDir(root: string): string {
   return join(tmpDir(root), "diagnostics");
+}
+
+/** Monitor process/cache lanes: `.red/tmp/monitors`. */
+export function monitorsDir(root: string): string {
+  return join(tmpDir(root), "monitors");
+}
+
+/** One monitor's disposable cache lane: `.red/tmp/monitors/<id>`. */
+export function monitorDir(root: string, id: string): string {
+  if (!id) throw new Error("monitor id is required");
+  return join(monitorsDir(root), id);
 }
 
 /** Date-partitioned session logs: `.red/tmp/logs/<yyyy-mm-dd>`. */
