@@ -5,12 +5,14 @@
 // here — callers resolve target/runner/passthrough and inject them.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { afkStateDir } from "@reddb-io/shared/red-paths.js";
+import { dirname, join } from "node:path";
+import { supervisorDir } from "@reddb-io/shared/red-paths.js";
 import { encodeDevSnapshotToon } from "../core/toon-snapshot.js";
 import type { ElasticShrinkMode } from "../core/supervisor.js";
+
+const DEFAULT_SUPERVISOR_ID = "fleet";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -65,10 +67,9 @@ export interface SpawnSupervisorOptions {
  * inline spawn so launch + watchdog-relaunch stay byte-identical.
  */
 export async function spawnSupervisor(opts: SpawnSupervisorOptions): Promise<number | null> {
-  const stateAfk = afkStateDir(opts.root);
-  mkdirSync(stateAfk, { recursive: true });
-  const pidFile = join(stateAfk, "afk-supervisor.pid");
-  const logFile = join(stateAfk, "afk-supervisor.log");
+  const supervisor = supervisorDir(opts.root, DEFAULT_SUPERVISOR_ID);
+  mkdirSync(supervisor, { recursive: true });
+  const pidFile = join(supervisor, "afk-supervisor.pid");
 
   const childArgs = [...(opts.passthrough ?? [])];
   if (opts.request) childArgs.unshift("--request", opts.request);
@@ -82,12 +83,11 @@ export async function spawnSupervisor(opts: SpawnSupervisorOptions): Promise<num
   if (opts.drainBudgetUsd !== undefined) env.RED_AFK_DRAIN_MAX_COST_USD = String(opts.drainBudgetUsd);
   if (opts.shrinkMode !== undefined) env.RED_AFK_SHRINK_MODE = opts.shrinkMode;
 
-  const out = openSync(logFile, "a");
   const child = spawn(process.execPath, [process.argv[1]!, "__supervise", ...childArgs], {
     cwd: opts.root,
     env,
     detached: true,
-    stdio: ["ignore", out, out],
+    stdio: ["ignore", "ignore", "ignore"],
   });
   child.unref();
 
@@ -107,20 +107,30 @@ export function stampFreshFleetHeartbeat(
   runner: string,
   target: number,
 ): void {
-  // TOON, never raw JSON — this is the fleet supervisor state snapshot surface
-  // (ADR 0097); `readFleetState` sniffs so a stamp from an older bundle still reads.
+  const supervisorId = DEFAULT_SUPERVISOR_ID;
+  // TOON, never raw JSON — this is a castle supervisor snapshot (ADR 0097);
+  // `readFleetState` sniffs so a stamp from an older bundle still reads.
   const body = encodeDevSnapshotToon({
-    ts: new Date(epoch * 1000).toISOString(),
-    epoch,
-    // A fresh relaunch stamp counts as progress: the new supervisor is
-    // healthy until proven otherwise, so seed both epochs to `epoch`.
-    last_progress_epoch: epoch,
+    kind: "supervisor",
+    id: supervisorId,
+    supervisor_id: supervisorId,
+    version: 1,
+    updated_at: new Date(epoch * 1000).toISOString(),
     runner,
-    ready_for_agent: 0,
-    slots: { busy: 0, free: target, total: target, parked: 0 },
-    spawns_this_tick: 0,
+    current: {
+      epoch,
+      // A fresh relaunch stamp counts as progress: the new supervisor is
+      // healthy until proven otherwise, so seed both epochs to `epoch`.
+      last_progress_epoch: epoch,
+      ready_for_agent: 0,
+      slots: { busy: 0, free: target, total: target, parked: 0 },
+      spawns_this_tick: 0,
+    },
+    queue: [],
+    completed: [],
   });
   const tmp = `${statePath}.tmp`;
+  mkdirSync(dirname(statePath), { recursive: true });
   writeFileSync(tmp, body, "utf8");
   renameSync(tmp, statePath);
 }
