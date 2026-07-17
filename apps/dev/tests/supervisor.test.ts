@@ -125,6 +125,7 @@ interface FakeIo {
   unblockSweep: ReturnType<typeof vi.fn>;
   fleetCostUsd: ReturnType<typeof vi.fn>;
   resizeRequest: ReturnType<typeof vi.fn>;
+  applyRuntimeConfig: ReturnType<typeof vi.fn>;
   attemptBranchHead: ReturnType<typeof vi.fn>;
   emitSupervisorEvent: ReturnType<typeof vi.fn>;
   bootSweeps: ReturnType<typeof vi.fn>;
@@ -174,6 +175,7 @@ function makeDeps(over: Partial<Record<keyof FakeIo, unknown>> = {}): {
     unblockSweep: vi.fn(async (): Promise<number[]> => []),
     fleetCostUsd: vi.fn(() => 0),
     resizeRequest: vi.fn(async () => null),
+    applyRuntimeConfig: vi.fn(async () => {}),
     attemptBranchHead: vi.fn(async () => undefined as string | undefined),
     emitSupervisorEvent: vi.fn(async () => {}),
     bootSweeps: vi.fn(async () => {}),
@@ -218,6 +220,7 @@ function makeDeps(over: Partial<Record<keyof FakeIo, unknown>> = {}): {
     unblockSweep: io.unblockSweep,
     attemptBranchHead: io.attemptBranchHead,
     resizeRequest: io.resizeRequest,
+    applyRuntimeConfig: io.applyRuntimeConfig,
     emitSupervisorEvent: io.emitSupervisorEvent,
     bootSweeps: io.bootSweeps,
   };
@@ -1285,6 +1288,82 @@ describe("superviseTick — elastic fleet resize (#1913)", () => {
     expect(result.respawned).toEqual([1, 2]);
   });
 
+  it("switches runner by draining current slots and respawning replacements on the new runner", async () => {
+    const live = new Set([5000, 5001]);
+    const applied: string[] = [];
+    const { deps, io } = makeDeps({
+      isAlive: vi.fn((pid: number) => live.has(pid)),
+      resizeRequest: vi.fn(async () => ({ target: 2, runner: "codex", shrinkMode: "drain-then-retire" })),
+      applyRuntimeConfig: vi.fn(async (cfg: { runner: string }) => {
+        applied.push(cfg.runner);
+      }),
+      spawnSlot: vi.fn(async (slot: number) => ({ pid: 9000 + slot, spawnEpoch: NOW })),
+    });
+    const state = initSupervisorState(2);
+    state.slots[0]!.pid = 5000;
+    state.slots[1]!.pid = 5001;
+
+    let result = await superviseTick(state, deps, config({ target: 2, runner: "claude" }), () => false);
+
+    expect(applied).toEqual(["codex"]);
+    expect(state.slots).toHaveLength(2);
+    expect(state.slots.every((slot) => slot.retiring)).toBe(true);
+    expect(io.requestSlotRetire).toHaveBeenCalledWith(0, 5000);
+    expect(io.requestSlotRetire).toHaveBeenCalledWith(1, 5001);
+    expect(io.spawnSlot).not.toHaveBeenCalled();
+    expect(result.retiredSlots).toEqual([]);
+
+    live.clear();
+    io.lastExitCode.mockReturnValue(0);
+    result = await superviseTick(state, deps, config({ target: 2, runner: "codex" }), () => false);
+
+    expect(state.slots).toHaveLength(2);
+    expect(io.spawnSlot).toHaveBeenCalledWith(0);
+    expect(io.spawnSlot).toHaveBeenCalledWith(1);
+    expect(result.retiredSlots).toEqual([1, 0]);
+    expect(result.respawned).toEqual([0, 1]);
+  });
+
+  it("does not roll slots when the runner directive matches the applied runner", async () => {
+    const { deps, io } = makeDeps({
+      isAlive: vi.fn(() => true),
+      resizeRequest: vi.fn(async () => ({ target: 2, runner: "claude", shrinkMode: "drain-then-retire" })),
+      applyRuntimeConfig: vi.fn(async () => {}),
+    });
+    const state = initSupervisorState(2);
+    state.slots[0]!.pid = 5000;
+    state.slots[1]!.pid = 5001;
+
+    await superviseTick(state, deps, config({ target: 2, runner: "claude" }), () => false);
+
+    expect(io.requestSlotRetire).not.toHaveBeenCalled();
+    expect(io.killTree).not.toHaveBeenCalled();
+    expect(io.spawnSlot).not.toHaveBeenCalled();
+    expect(state.slots.every((slot) => !slot.retiring)).toBe(true);
+  });
+
+  it("does not mark newly-grown slots retiring during a simultaneous runner switch", async () => {
+    const live = new Set([5000, 5001]);
+    const { deps, io } = makeDeps({
+      isAlive: vi.fn((pid: number) => live.has(pid)),
+      resizeRequest: vi.fn(async () => ({ target: 4, runner: "codex", shrinkMode: "drain-then-retire" })),
+      spawnSlot: vi.fn(async (slot: number) => ({ pid: 9000 + slot, spawnEpoch: NOW })),
+    });
+    const state = initSupervisorState(2);
+    state.slots[0]!.pid = 5000;
+    state.slots[1]!.pid = 5001;
+
+    await superviseTick(state, deps, config({ target: 2, runner: "claude" }), () => false);
+
+    expect(state.slots).toHaveLength(4);
+    expect(state.slots[0]!.retiringFor).toBe("runner-switch");
+    expect(state.slots[1]!.retiringFor).toBe("runner-switch");
+    expect(state.slots[2]!.retiring).toBe(false);
+    expect(state.slots[3]!.retiring).toBe(false);
+    expect(io.spawnSlot).toHaveBeenCalledWith(2);
+    expect(io.spawnSlot).toHaveBeenCalledWith(3);
+  });
+
   it("shrinks with hard-kill by killing trailing slots, reconciling claims, and removing them immediately", async () => {
     const { deps, io } = makeDeps({
       isAlive: vi.fn(() => true),
@@ -1660,6 +1739,8 @@ describe("runSupervisor", () => {
     expect(io.emitFleetHeartbeat).toHaveBeenCalledTimes(2);
     expect(io.emitFleetHeartbeat.mock.calls[0]![0]).toMatchObject({
       ts: new Date(NOW * 1000).toISOString(),
+      target: 1,
+      shrinkMode: "drain-then-retire",
       readyForAgent: 5,
       slotsBusy: 1,
       slotsFree: 0,
