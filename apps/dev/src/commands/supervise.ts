@@ -7,8 +7,9 @@
 // native — no bash anywhere in the loop.
 
 import { spawn } from "node:child_process";
-import { existsSync, openSync, closeSync, readFileSync, writeFileSync, writeSync, rmSync, renameSync } from "node:fs";
+import { existsSync, openSync, closeSync, readFileSync, writeFileSync, rmSync, renameSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { JsonValue } from "@reddb-io/toon";
 import { readBuildInfo } from "@reddb-io/build-info";
 import {
   type FleetHeartbeat,
@@ -20,9 +21,10 @@ import {
   type SpawnPolicy,
   type SupervisorDeps,
 } from "../core/supervisor.js";
-import { appendRecordToonlRow } from "../core/jsonl-log.js";
+import { appendRecordToonlTaggedRow } from "../core/jsonl-log.js";
 import {
   afkPaths,
+  DEFAULT_SUPERVISOR_ID,
   resolveRepoSlug,
   collectPrecheckFacts,
   collectBootOptions,
@@ -55,8 +57,9 @@ import {
   castleStateSnapshotPath,
   createEnginePaths,
   writeCastleStateSnapshot,
+  type CastleStateSnapshot,
 } from "@reddb-io/red-castle/engine";
-import { encodeDevSnapshotToon } from "../core/toon-snapshot.js";
+import { decodeDevSnapshotSniff, encodeDevSnapshotToon } from "../core/toon-snapshot.js";
 
 function isAlive(pid: number): boolean {
   try {
@@ -78,35 +81,53 @@ function fleetHeartbeatMessage(hb: FleetHeartbeat): string {
  * keys are dropped before encoding (TOON `encode` rejects `undefined`), matching
  * the old `JSON.stringify` behaviour that omitted them.
  */
-export function fleetHeartbeatState(hb: FleetHeartbeat): string {
-  return encodeDevSnapshotToon({
-    ts: hb.ts,
-    epoch: hb.epoch,
-    ...(hb.lastProgressEpoch > 0 ? { last_progress_epoch: hb.lastProgressEpoch } : {}),
+function fleetHeartbeatSnapshot(
+  hb: FleetHeartbeat,
+  supervisorId = DEFAULT_SUPERVISOR_ID,
+  pid = process.pid,
+): CastleStateSnapshot {
+  return {
+    kind: "supervisor",
+    id: supervisorId,
+    supervisor_id: supervisorId,
+    version: 1,
+    updated_at: hb.ts,
     runner: hb.runner,
     ...(hb.bundleVersion ? { bundle_version: hb.bundleVersion } : {}),
-    ready_for_agent: hb.readyForAgent,
-    slots: {
-      busy: hb.slotsBusy,
-      free: hb.slotsFree,
-      total: hb.slotsTotal,
-      parked: hb.slotsParked,
+    pid,
+    current: {
+      epoch: hb.epoch,
+      ...(hb.lastProgressEpoch > 0 ? { last_progress_epoch: hb.lastProgressEpoch } : {}),
+      ready_for_agent: hb.readyForAgent,
+      slots: {
+        busy: hb.slotsBusy,
+        free: hb.slotsFree,
+        total: hb.slotsTotal,
+        parked: hb.slotsParked,
+      },
+      spawns_this_tick: hb.spawnsThisTick,
+      ...(hb.drainBudget
+        ? {
+            drain_budget: {
+              tier: hb.drainBudget.tier,
+              spent_usd: Number(hb.drainBudget.spentUsd.toFixed(4)),
+              limit_usd: Number(hb.drainBudget.limitUsd.toFixed(4)),
+              percent: Number((hb.drainBudget.percent * 100).toFixed(2)),
+            },
+          }
+        : {}),
     },
-    spawns_this_tick: hb.spawnsThisTick,
-    ...(hb.drainBudget
-      ? {
-          drain_budget: {
-            tier: hb.drainBudget.tier,
-            spent_usd: Number(hb.drainBudget.spentUsd.toFixed(4)),
-            limit_usd: Number(hb.drainBudget.limitUsd.toFixed(4)),
-            percent: Number((hb.drainBudget.percent * 100).toFixed(2)),
-          },
-        }
-      : {}),
-  });
+    queue: [],
+    completed: [],
+  };
+}
+
+export function fleetHeartbeatState(hb: FleetHeartbeat): string {
+  return encodeDevSnapshotToon(fleetHeartbeatSnapshot(hb) as unknown as JsonValue);
 }
 
 function writeFleetStateAtomic(path: string, hb: FleetHeartbeat): void {
+  mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, fleetHeartbeatState(hb), "utf8");
   renameSync(tmp, path);
@@ -120,39 +141,7 @@ async function writeCastleSupervisorSnapshot(
   const paths = createEnginePaths(join(root, ".red"));
   await writeCastleStateSnapshot(
     castleStateSnapshotPath(paths, "supervisor", supervisorId),
-    {
-      kind: "supervisor",
-      id: supervisorId,
-      supervisor_id: supervisorId,
-      version: 1,
-      updated_at: hb.ts,
-      runner: hb.runner,
-      pid: process.pid,
-      current: {
-        epoch: hb.epoch,
-        last_progress_epoch: hb.lastProgressEpoch,
-        ready_for_agent: hb.readyForAgent,
-        slots: {
-          busy: hb.slotsBusy,
-          free: hb.slotsFree,
-          total: hb.slotsTotal,
-          parked: hb.slotsParked,
-        },
-        spawns_this_tick: hb.spawnsThisTick,
-        ...(hb.drainBudget
-          ? {
-              drain_budget: {
-                tier: hb.drainBudget.tier,
-                spent_usd: Number(hb.drainBudget.spentUsd.toFixed(4)),
-                limit_usd: Number(hb.drainBudget.limitUsd.toFixed(4)),
-                percent: Number((hb.drainBudget.percent * 100).toFixed(2)),
-              },
-            }
-          : {}),
-      },
-      queue: [],
-      completed: [],
-    },
+    fleetHeartbeatSnapshot(hb, supervisorId),
   );
 }
 
@@ -257,13 +246,13 @@ export function buildSlotEnv(
   return out;
 }
 
-function slotRetirePath(statePath: string, slot: number): string {
-  return join(dirname(statePath), `afk-supervisor-slot-${slot}.retire`);
+function slotRetirePath(supervisorDir: string, slot: number): string {
+  return join(supervisorDir, `afk-supervisor-slot-${slot}.retire`);
 }
 
 function readResizeRequest(path: string): ElasticResizeRequest | null {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+    const parsed = decodeDevSnapshotSniff(readFileSync(path, "utf8")) as {
       target?: unknown;
       shrink_mode?: unknown;
       shrinkMode?: unknown;
@@ -412,7 +401,6 @@ function buildSupervisorDeps(
   root: string,
   tmpDir: string,
   slotLogsDir: string,
-  logFd: number,
   firehosePath: string,
   statePath: string,
   runner: string,
@@ -423,14 +411,13 @@ function buildSupervisorDeps(
   const bundle = process.argv[1];
   const bundleVersion = readBuildInfo("dev").version;
   const now = () => Math.floor(Date.now() / 1000);
-  // Per-tick / boot liveness line into afk-supervisor.log (best-effort). Shared
+  // Per-tick / boot liveness line into supervisor.log.toonl (best-effort). Shared
   // by `log` and the pre-spawn boot sweeps so both land in the supervisor log.
   const logLine = (line: string): void => {
-    try {
-      writeSync(logFd, `[${new Date().toISOString()}] ${line}\n`);
-    } catch {
-      // best-effort: a log-write failure must never affect the loop.
-    }
+    void appendRecordToonlTaggedRow(firehosePath, "log", line, {
+      ts: new Date().toISOString(),
+      fields: { worker: "fleet" },
+    }).catch(() => undefined);
   };
   // Fleet hook resolution: library defaults-dir + project .red/hooks/ layering,
   // same convention as worker hooks (ADR 0026, #830, #833).
@@ -444,6 +431,7 @@ function buildSupervisorDeps(
   const slotPids = new Map<number, number>();
   // slot index → exit code of the most recent worker for that slot.
   const slotExitCodes = new Map<number, number>();
+  const supervisorDir = dirname(firehosePath);
   // Worker env (build_passthrough_env parity): start from the supervisor's full
   // env, then STRIP every internal supervisor knob in PASSTHROUGH_DENYLIST plus
   // every per-slot `_BASE` build-isolation var, so they never leak to the worker
@@ -463,7 +451,7 @@ function buildSupervisorDeps(
         // (mirrors spawn_slot's per-slot slot_log in supervisor.sh).
         const slotLogFile = slotLogPath(tmpDir, slot, slotLogsDir);
         const slotFd = openSync(slotLogFile, "a");
-        const retireFile = slotRetirePath(statePath, slot);
+        const retireFile = slotRetirePath(supervisorDir, slot);
         rmSync(retireFile, { force: true });
         const child = spawn(process.execPath, [bundle, ...runArgs], {
           cwd: root,
@@ -488,12 +476,15 @@ function buildSupervisorDeps(
           "--reconcile-issue", String(candidate.issue),
           ...slotArgs,
         ];
+        const slotLogFile = slotLogPath(tmpDir, slot, slotLogsDir);
+        const slotFd = openSync(slotLogFile, "a");
         const child = spawn(process.execPath, [bundle, ...runArgs], {
           cwd: root,
-          env: buildSlotEnv(workerEnv, slot, undefined, slotRetirePath(statePath, slot)),
+          env: buildSlotEnv(workerEnv, slot, undefined, slotRetirePath(supervisorDir, slot)),
           detached: true,
-          stdio: ["ignore", logFd, logFd],
+          stdio: ["ignore", slotFd, slotFd],
         });
+        closeSync(slotFd);
         child.on("exit", (code) => {
           // null means the process was killed by a signal; treat as non-clean (1).
           slotExitCodes.set(slot, code ?? 1);
@@ -506,7 +497,7 @@ function buildSupervisorDeps(
       lastExitCode: (slot) => slotExitCodes.get(slot) ?? null,
       isAlive,
       requestSlotRetire: async (slot) => {
-        writeFileSync(slotRetirePath(statePath, slot), "", "utf8");
+        writeFileSync(slotRetirePath(supervisorDir, slot), "", "utf8");
       },
       // Wait-and-escalate killer (#580): SIGTERM → grace → SIGKILL → CONFIRM the
       // tree is gone, then return whether it actually died. The reaper gates its
@@ -665,12 +656,12 @@ function buildSupervisorDeps(
         stateError = heartbeatWriteError(err);
       }
       try {
-        await writeCastleSupervisorSnapshot(root, `s${process.pid}`, stamped);
+        await writeCastleSupervisorSnapshot(root, DEFAULT_SUPERVISOR_ID, stamped);
       } catch {
         // best-effort: castle state mirroring must not affect the supervisor.
       }
       try {
-        await appendRecordToonlRow(firehosePath, "heartbeat", fleetHeartbeatMessage(stamped), {
+        await appendRecordToonlTaggedRow(firehosePath, "heartbeat", fleetHeartbeatMessage(stamped), {
           ts: stamped.ts,
           fields: {
             worker: "fleet",
@@ -723,9 +714,9 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
   const paths = afkPaths(root);
   const tmp = paths.tmpDir;
   const stateAfk = dirname(paths.supervisorPidPath);
+  const legacyCastleState = dirname(paths.historyPath);
   const pidFile = paths.supervisorPidPath;
   const stopFile = paths.supervisorStopPath;
-  const logFile = paths.supervisorLogPath;
   const firehoseFile = paths.fleetFirehosePath;
   const stateFile = paths.fleetStatePath;
   const slotLogsDir = slotLogDir(tmp);
@@ -739,7 +730,7 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
   // Ensure the workers root exists so the event-driven wake's fs.watch (#934) can
   // attach from boot rather than waiting for the first worker to create it.
   await import("../runtime/fs.js").then((m) => m.ensureDir(join(tmp, "workers")));
-  await reapStaleSupervisorState(stateAfk, isAlive);
+  await reapStaleSupervisorState([stateAfk, legacyCastleState], isAlive);
   // single-supervisor lock
   if (existsSync(pidFile)) {
     try {
@@ -757,7 +748,6 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
   if (existsSync(stopFile)) rmSync(stopFile, { force: true });
   rmSync(paths.supervisorResizePath, { force: true });
 
-  const logFd = openSync(logFile, "a");
   const values = loadConfig(paths.configPath, { warn: () => undefined });
   const config = resolveSupervisorConfig(process.env, (key) => getConfig(values, key));
   const state = initSupervisorState(config.target);
@@ -773,7 +763,7 @@ export async function superviseCommand(args: string[], cwd = process.cwd()): Pro
     RED_AFK_RUNNER: config.runner,
     ...(repo.length > 0 ? { RED_AFK_REPO: repo } : {}),
   };
-  const deps = buildSupervisorDeps(root, tmp, slotLogsDir, logFd, firehoseFile, stateFile, config.runner, ghCtx, slotArgs, hookEnvBase);
+  const deps = buildSupervisorDeps(root, tmp, slotLogsDir, firehoseFile, stateFile, config.runner, ghCtx, slotArgs, hookEnvBase);
 
   const stopRequested = (): boolean => existsSync(stopFile);
 
