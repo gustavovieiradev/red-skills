@@ -14,6 +14,7 @@ import {
   type SupervisorConfig,
   type SupervisorDeps,
 } from "../src/core/supervisor.js";
+import { OperationalProbeHaltError, type OperationalProbeReport } from "../src/core/operational-probes.js";
 import type { ProcessSnapshotEntry } from "../src/core/reaper-signal.js";
 import type { LivenessVerdict } from "@reddb-io/red-castle";
 
@@ -130,6 +131,36 @@ describe("runSupervisor — supervisor owns the boot (#623)", () => {
 
     expect(spawnSlot).toHaveBeenCalledTimes(1);
     expect(log.mock.calls.some((c) => String(c[0]).includes("boot sweeps failed"))).toBe(true);
+  });
+
+  it("refuses the fleet when bootSweeps raises a red operational probe", async () => {
+    const report: OperationalProbeReport = {
+      schema_version: "red.dev.operational_probes.v1",
+      status: "red",
+      probes: [
+        {
+          probe: "https-git-remote",
+          name: "Git remotes must use SSH for AFK",
+          status: "red",
+          evidence: "https remotes: https://github.com/reddb-io/red-skills.git",
+          canonicalFix: "Set each GitHub HTTPS remote to its SSH URL.",
+          fixGate: "confirm",
+        },
+      ],
+    };
+    const { deps, spawnSlot, log } = makeDeps({
+      bootSweeps: vi.fn(async () => {
+        throw new OperationalProbeHaltError(report);
+      }),
+    });
+    const state = initSupervisorState(1);
+
+    await runSupervisor(state, deps, config({ target: 1 }), () => true);
+
+    expect(spawnSlot).not.toHaveBeenCalled();
+    const line = log.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(line).toContain("Git remotes must use SSH for AFK");
+    expect(line).toContain("Canonical fix");
   });
 
   it("spawns normally when no bootSweeps is wired (back-compat)", async () => {
