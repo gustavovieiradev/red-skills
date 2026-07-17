@@ -33,11 +33,6 @@ import type { FleetHeartbeat } from "../src/core/supervisor.js";
 
 /** The single sanctioned non-TOON file the stack writes (ADR 0097). */
 const SOLE_NON_TOON_FILE = ".red/config.yaml";
-const LEGACY_STATE_TOON_NAME_EXEMPTIONS = new Set([
-  // Deleted by the #1920/#1921 castle boot-migration chain; issue #2039
-  // explicitly excludes renaming this dual-write mirror in this slice.
-  "afk-supervisor.state.json",
-]);
 
 /** Assert a snapshot document's bytes are TOON, never raw JSON. Raw JSON of an
  * object/non-empty array starts with `{`/`[` and round-trips through
@@ -94,19 +89,21 @@ describe("castle-engine write-surface TOON uniformity", () => {
     const bytes = fleetHeartbeatState(sampleHeartbeat());
     expect(() => JSON.parse(bytes)).toThrow();
     const decoded = decode(bytes) as Record<string, unknown>;
-    expect(decoded.epoch).toBe(42);
-    expect(decoded.slots).toEqual({ busy: 1, free: 1, total: 2, parked: 0 });
+    expect(decoded.kind).toBe("supervisor");
+    expect((decoded.current as Record<string, unknown>).epoch).toBe(42);
+    expect((decoded.current as Record<string, unknown>).slots).toEqual({ busy: 1, free: 1, total: 2, parked: 0 });
   });
 
   it("the fresh-relaunch supervisor heartbeat stamp is TOON, never raw JSON", async () => {
     const dir = await mkdtemp(join(tmpdir(), "castle-toon-stamp-"));
-    const path = join(dir, "afk-supervisor.state.json");
+    const path = join(dir, "state.toon");
     stampFreshFleetHeartbeat(path, 7, "claude", 2);
     const bytes = await readFile(path, "utf8");
     expect(() => JSON.parse(bytes)).toThrow();
     const decoded = decode(bytes) as Record<string, unknown>;
-    expect(decoded.epoch).toBe(7);
-    expect(decoded.slots).toEqual({ busy: 0, free: 2, total: 2, parked: 0 });
+    expect(decoded.kind).toBe("supervisor");
+    expect((decoded.current as Record<string, unknown>).epoch).toBe(7);
+    expect((decoded.current as Record<string, unknown>).slots).toEqual({ busy: 0, free: 2, total: 2, parked: 0 });
   });
 
   it("the supervisor restart ledger is TOON, never raw JSON", async () => {
@@ -123,7 +120,7 @@ describe("castle-engine write-surface TOON uniformity", () => {
 
   it("the monitor log-cursor snapshot is TOON, never raw JSON", async () => {
     const dir = await mkdtemp(join(tmpdir(), "castle-toon-cursors-"));
-    const path = join(dir, "monitor-log-cursors.json");
+    const path = join(dir, "log-cursors.toon");
     const cursors = { "/x/afk.log": { size: 5, lines: 1 } };
     await writeLogLineCursors(path, cursors);
     const bytes = await readFile(path, "utf8");
@@ -147,7 +144,11 @@ describe("castle-engine write-surface TOON uniformity", () => {
     const paths = afkPaths(join(tmpdir(), "repo"));
     const surfaces = [
       paths.historyPath,
+      paths.fleetStatePath,
       paths.fleetFirehosePath,
+      paths.monitorLogCursorPath,
+      paths.supervisorResizePath,
+      paths.supervisorRestartsPath,
       paths.statuslineCachePath,
       paths.statuslineRepoCachePath,
     ];
@@ -155,10 +156,6 @@ describe("castle-engine write-surface TOON uniformity", () => {
       expect(path.endsWith(".toon") || path.endsWith(".toonl")).toBe(true);
       expect(path.endsWith(".json") || path.endsWith(".jsonl")).toBe(false);
     }
-  });
-
-  it("documents the only legacy state-tier TOON snapshot name exemption", () => {
-    expect(LEGACY_STATE_TOON_NAME_EXEMPTIONS).toEqual(new Set(["afk-supervisor.state.json"]));
   });
 
   it("documents .red/config.yaml as the single sanctioned non-TOON file", () => {
