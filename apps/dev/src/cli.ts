@@ -8,6 +8,7 @@ import { hitlCardCommand } from "./commands/hitl-card.js";
 import { codexMonitorAgentCommand } from "./commands/codex-monitor-agent.js";
 import { codexStatuslineCommand } from "./commands/codex-statusline.js";
 import { dashboardCommand } from "./commands/dashboard.js";
+import { doctorCommand } from "./commands/doctor.js";
 import { injectDevelopmentWorkflowCommand } from "./commands/inject-development-workflow.js";
 import { monitorCommand } from "./commands/monitor.js";
 import { runCommand } from "./commands/run.js";
@@ -36,6 +37,7 @@ export type CliCommand =
   | "stop"
   | "go"
   | "dashboard"
+  | "doctor"
   | "audit-skills"
   | "afk-output-shaping"
   | "daily-review"
@@ -83,6 +85,7 @@ const CLI_ROUTER: RouterSchema<CliCommand> = {
     stop: {},
     go: {},
     dashboard: {},
+    doctor: {},
     "audit-skills": {},
     "afk-output-shaping": {},
     "daily-review": {},
@@ -139,6 +142,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (parsed.command === "stop") return stopCommand(parsed.args);
   if (parsed.command === "go") return goCommand(parsed.args);
   if (parsed.command === "dashboard") return dashboardCommand(parsed.args);
+  if (parsed.command === "doctor") return doctorCommand(parsed.args);
   if (parsed.command === "audit-skills") return auditSkillsCommand(parsed.args);
   if (parsed.command === "afk-output-shaping") return afkOutputShapingCommand(parsed.args);
   if (parsed.command === "daily-review") return activityReviewCommand("daily", parsed.args);
