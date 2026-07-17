@@ -6,7 +6,6 @@
 
 import { constants } from "node:fs";
 import { access, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { closeSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { SupervisorLiveness } from "../core/supervisor.js";
 import type { DeadSupervisorSignals, WatchdogIO } from "../core/watchdog.js";
@@ -17,6 +16,7 @@ import { detectRunner } from "../core/runner-detection.js";
 import { callerProcessTreeNative } from "./caller-process.js";
 import { spawnSupervisor, stampFreshFleetHeartbeat } from "./supervisor-spawn.js";
 import { decodeDevSnapshotSniff, encodeDevSnapshotToon } from "../core/toon-snapshot.js";
+import { appendRecordToonlRow } from "../core/jsonl-log.js";
 // The wait-and-escalate killer (SIGTERM → grace → SIGKILL → confirm) is shared
 // with the fleet reaper and `fleet stop` (#580). It matters for recovery
 // correctness here too: the supervisor's own `finally` removes the pid/stop
@@ -220,12 +220,10 @@ export function buildWatchdogIO(
         // best-effort
       }
       try {
-        const fd = openSync(logFile, "a");
-        try {
-          writeSync(fd, `[${new Date().toISOString()}] ${line}\n`);
-        } finally {
-          closeSync(fd);
-        }
+        void appendRecordToonlRow(logFile, "watchdog", line, {
+          ts: new Date().toISOString(),
+          fields: { lvl: "warn", worker: "fleet" },
+        });
       } catch {
         // best-effort: a log-write failure must never affect recovery.
       }
