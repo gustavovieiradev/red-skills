@@ -21,6 +21,8 @@ import { join } from "node:path";
 import {
   afkStateDir,
   legacyAfkStateDir,
+  monitorDir,
+  supervisorDir,
   statuslineStateDir,
   tmpDir,
   stateDir,
@@ -41,6 +43,9 @@ export interface DevPathMigrationEntry {
   kind: MigrationEntryKind;
 }
 
+const DEFAULT_SUPERVISOR_ID = "fleet";
+const DEFAULT_MONITOR_ID = "default";
+
 /**
  * The fixed set of dev-owned durable artifacts and their legacy → canonical
  * mapping, derived from `root` through the shared path authority. The rotated
@@ -52,14 +57,9 @@ export function planDevDurablePathMigration(root: string): DevPathMigrationEntry
   const tmp = tmpDir(root);
   const castleState = afkStateDir(root);
   const legacyAfkState = legacyAfkStateDir(root);
+  const supervisor = supervisorDir(root, DEFAULT_SUPERVISOR_ID);
   const state = stateDir(root);
   const statusline = statuslineStateDir(root);
-  const file = (name: string, dest: string): DevPathMigrationEntry => ({
-    id: name,
-    legacy: join(tmp, name),
-    current: join(dest, name),
-    kind: "file",
-  });
   const renamedFile = (legacyName: string, dest: string, currentName: string): DevPathMigrationEntry => ({
     id: legacyName,
     legacy: join(tmp, legacyName),
@@ -78,24 +78,19 @@ export function planDevDurablePathMigration(root: string): DevPathMigrationEntry
     current,
     kind: "dir",
   });
-  const castleFile = (name: string): DevPathMigrationEntry => file(name, castleState);
+  const supervisorFile = (name: string, currentName = name): DevPathMigrationEntry =>
+    fileFrom(name, join(tmp, name), join(supervisor, currentName));
   const legacyCastleFile = (name: string): DevPathMigrationEntry =>
-    fileFrom(`state/afk/${name}`, join(legacyAfkState, name), join(castleState, name));
+    fileFrom(`state/afk/${name}`, join(legacyAfkState, name), join(supervisor, name));
   return [
-    castleFile("afk-supervisor.state.json"),
-    castleFile("afk-supervisor.pid"),
-    castleFile("afk-supervisor.stop"),
-    castleFile("afk-supervisor.restarts.json"),
-    castleFile("monitor-log-cursors.json"),
+    supervisorFile("afk-supervisor.pid"),
+    supervisorFile("afk-supervisor-boot.pid"),
+    supervisorFile("afk-supervisor.stop"),
     { id: "runner-circuit", legacy: join(tmp, "runner-circuit"), current: join(castleState, "runner-circuit"), kind: "dir" },
     fileFrom("afk-history.toonl", join(state, "afk-history.toonl"), join(castleState, "history.toonl")),
-    legacyCastleFile("afk-supervisor.state.json"),
     legacyCastleFile("afk-supervisor.pid"),
+    legacyCastleFile("afk-supervisor-boot.pid"),
     legacyCastleFile("afk-supervisor.stop"),
-    legacyCastleFile("afk-supervisor.restarts.json"),
-    legacyCastleFile("monitor-log-cursors.json"),
-    legacyCastleFile("afk-supervisor.log"),
-    legacyCastleFile("afk-supervisor.log.toonl"),
     dirFrom("state/afk/runner-circuit", join(legacyAfkState, "runner-circuit"), join(castleState, "runner-circuit")),
     renamedFile("statusline-cache.json", statusline, "statusline-cache.toon"),
     renamedFile("statusline-repo-cache.json", statusline, "statusline-repo-cache.toon"),
@@ -120,7 +115,43 @@ export function planDevDurablePathMigration(root: string): DevPathMigrationEntry
  * each to `currentDir` under the same idempotent rule.
  */
 export function supervisorLogMigration(root: string): { legacyDir: string; currentDir: string; logPrefix: string } {
-  return { legacyDir: tmpDir(root), currentDir: afkStateDir(root), logPrefix: "afk-supervisor.log" };
+  return { legacyDir: tmpDir(root), currentDir: supervisorDir(root, DEFAULT_SUPERVISOR_ID), logPrefix: "afk-supervisor.log" };
+}
+
+export function legacySupervisorStateMigrations(root: string): DevPathMigrationEntry[] {
+  const tmp = tmpDir(root);
+  const legacyAfkState = legacyAfkStateDir(root);
+  const castleState = afkStateDir(root);
+  const current = join(castleState, "supervisors", DEFAULT_SUPERVISOR_ID, "state.toon");
+  return [
+    { id: "afk-supervisor.state.json", legacy: join(tmp, "afk-supervisor.state.json"), current, kind: "file" },
+    { id: "state/afk/afk-supervisor.state.json", legacy: join(legacyAfkState, "afk-supervisor.state.json"), current, kind: "file" },
+    { id: "state/castle/afk-supervisor.state.json", legacy: join(castleState, "afk-supervisor.state.json"), current, kind: "file" },
+  ];
+}
+
+export function legacyMonitorCursorMigrations(root: string): DevPathMigrationEntry[] {
+  const tmp = tmpDir(root);
+  const legacyAfkState = legacyAfkStateDir(root);
+  const castleState = afkStateDir(root);
+  const current = join(monitorDir(root, DEFAULT_MONITOR_ID), "log-cursors.toon");
+  return [
+    { id: "monitor-log-cursors.json", legacy: join(tmp, "monitor-log-cursors.json"), current, kind: "file" },
+    { id: "state/afk/monitor-log-cursors.json", legacy: join(legacyAfkState, "monitor-log-cursors.json"), current, kind: "file" },
+    { id: "state/castle/monitor-log-cursors.json", legacy: join(castleState, "monitor-log-cursors.json"), current, kind: "file" },
+  ];
+}
+
+export function legacySupervisorRestartMigrations(root: string): DevPathMigrationEntry[] {
+  const tmp = tmpDir(root);
+  const legacyAfkState = legacyAfkStateDir(root);
+  const castleState = afkStateDir(root);
+  const current = join(supervisorDir(root, DEFAULT_SUPERVISOR_ID), "restarts.toon");
+  return [
+    { id: "afk-supervisor.restarts.json", legacy: join(tmp, "afk-supervisor.restarts.json"), current, kind: "file" },
+    { id: "state/afk/afk-supervisor.restarts.json", legacy: join(legacyAfkState, "afk-supervisor.restarts.json"), current, kind: "file" },
+    { id: "state/castle/afk-supervisor.restarts.json", legacy: join(castleState, "afk-supervisor.restarts.json"), current, kind: "file" },
+  ];
 }
 
 /** What the executor should do with one legacy/canonical pair. */
