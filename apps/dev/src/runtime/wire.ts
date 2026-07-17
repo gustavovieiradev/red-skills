@@ -45,6 +45,7 @@ import {
   readCastleMonitorFleetState,
   readCastleMonitorHistoryEvents,
   readCastleMonitorWorkers,
+  type CastleStateSnapshot,
 } from "@reddb-io/red-castle/engine";
 import { liveIssueFromBranch, type BranchRef } from "../core/branch-cleanup.js";
 import { isRunner, type Runner } from "../types/runner.js";
@@ -132,24 +133,29 @@ export interface AfkPaths {
   configPath: string;
 }
 
+export const DEFAULT_SUPERVISOR_ID = "fleet";
+export const DEFAULT_MONITOR_ID = "default";
+
 export function afkPaths(root: string): AfkPaths {
   const tmp = rp.tmpDir(root);
   const state = rp.stateDir(root);
   const afkState = rp.afkStateDir(root);
+  const supervisor = rp.supervisorDir(root, DEFAULT_SUPERVISOR_ID);
+  const monitor = rp.monitorDir(root, DEFAULT_MONITOR_ID);
   const statusline = rp.statuslineStateDir(root);
   return {
     tmpDir: tmp,
     stateDir: state,
     workersRoot: rp.workersDir(root),
     historyPath: join(afkState, "history.toonl"),
-    fleetStatePath: join(afkState, "afk-supervisor.state.json"),
-    fleetFirehosePath: join(afkState, "afk-supervisor.log.toonl"),
-    monitorLogCursorPath: join(afkState, "monitor-log-cursors.json"),
-    supervisorPidPath: join(afkState, "afk-supervisor.pid"),
-    supervisorStopPath: join(afkState, "afk-supervisor.stop"),
-    supervisorLogPath: join(afkState, "afk-supervisor.log"),
-    supervisorResizePath: join(afkState, "afk-supervisor.resize.json"),
-    supervisorRestartsPath: join(afkState, "afk-supervisor.restarts.json"),
+    fleetStatePath: join(afkState, "supervisors", DEFAULT_SUPERVISOR_ID, "state.toon"),
+    fleetFirehosePath: join(supervisor, "supervisor.log.toonl"),
+    monitorLogCursorPath: join(monitor, "log-cursors.toon"),
+    supervisorPidPath: join(supervisor, "afk-supervisor.pid"),
+    supervisorStopPath: join(supervisor, "afk-supervisor.stop"),
+    supervisorLogPath: join(supervisor, "supervisor.log.toonl"),
+    supervisorResizePath: join(supervisor, "resize.toon"),
+    supervisorRestartsPath: join(supervisor, "restarts.toon"),
     runnerCircuitDir: join(afkState, "runner-circuit"),
     statuslineCachePath: join(statusline, "statusline-cache.toon"),
     statuslineRepoCachePath: join(statusline, "statusline-repo-cache.toon"),
@@ -501,6 +507,29 @@ const SLOT_STATUSES = new Set<SlotDetail["status"]>(["open", "half-open", "idle-
 
 function parseFleetState(raw: unknown): FleetState | null {
   if (raw === null || typeof raw !== "object") return null;
+  const snapshot = raw as Partial<CastleStateSnapshot>;
+  if (snapshot.kind === "supervisor") {
+    const current = snapshot.current ?? {};
+    const slots = current.slots && typeof current.slots === "object" && !Array.isArray(current.slots)
+      ? current.slots as { busy?: unknown; free?: unknown; total?: unknown; parked?: unknown }
+      : {};
+    const epoch = Number(current.epoch ?? Math.floor(Date.parse(snapshot.updated_at ?? "") / 1000));
+    if (!Number.isFinite(epoch) || epoch <= 0) return null;
+    const rawProgress = Number(current.last_progress_epoch ?? 0);
+    return {
+      ts: typeof snapshot.updated_at === "string" ? snapshot.updated_at : "",
+      epoch,
+      lastProgressEpoch: Number.isFinite(rawProgress) && rawProgress > 0 ? rawProgress : undefined,
+      runner: typeof snapshot.runner === "string" ? snapshot.runner : "",
+      bundleVersion: typeof snapshot.bundle_version === "string" ? snapshot.bundle_version : undefined,
+      readyForAgent: Number(current.ready_for_agent ?? 0) || 0,
+      slotsBusy: Number(slots.busy ?? 0) || 0,
+      slotsFree: Number(slots.free ?? 0) || 0,
+      slotsTotal: Number(slots.total ?? 0) || 0,
+      slotsParked: Number(slots.parked ?? 0) || 0,
+      spawnsThisTick: Number(current.spawns_this_tick ?? 0) || 0,
+    };
+  }
   const rec = raw as {
     ts?: unknown;
     epoch?: unknown;
