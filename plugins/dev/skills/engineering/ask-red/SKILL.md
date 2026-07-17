@@ -47,7 +47,8 @@ back into `/start`, `/to-spec`, `/to-tickets`, `/afk`, or `/hitl`.
   `/context` depending on whether the question is queue health, period review,
   rsp usage gains, skill quality, or repository context. For operational
   troubleshooting, route to the owning reference: `/afk`, `/go`, `/hitl`, or
-  rsp.
+  rsp. Live fleet worker-count resize and runner switch are `/afk fleet`
+  operations.
 - **Design uncertainty** -> `/prototype`; if the uncertainty is too broad for
   one throwaway answer, use `/wayfinder`.
 - **Corpus knowledge graph requests** -> memory plugin surfaces. For "build a
