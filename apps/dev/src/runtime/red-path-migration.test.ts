@@ -1,8 +1,9 @@
 import { mkdtemp, mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { decode } from "@reddb-io/toon";
 import { afterEach, describe, expect, it } from "vitest";
-import { afkStateDir, legacyAfkStateDir, stateDir, statuslineStateDir, tmpDir } from "@reddb-io/shared/red-paths.js";
+import { afkStateDir, legacyAfkStateDir, monitorDir, stateDir, statuslineStateDir, supervisorDir, tmpDir } from "@reddb-io/shared/red-paths.js";
 import { readCastleHistoryRecords } from "@reddb-io/red-castle/engine";
 import { migrateLegacyDevPaths } from "./red-path-migration.js";
 
@@ -30,10 +31,17 @@ afterEach(() => {
 });
 
 describe("migrateLegacyDevPaths", () => {
-  it("relocates legacy durable artifacts to the state tier and reports them", async () => {
+  it("relocates legacy durable and live artifacts to their canonical lanes", async () => {
     const root = await freshRoot();
     const tmp = tmpDir(root);
     await writeFile(join(tmp, "afk-supervisor.pid"), "123", "utf8");
+    await writeFile(join(tmp, "afk-supervisor.state.json"), JSON.stringify({
+      ts: "2026-07-17T00:00:00.000Z",
+      epoch: 1784246400,
+      ready_for_agent: 2,
+      slots: { busy: 1, free: 1, total: 2, parked: 0 },
+    }), "utf8");
+    await writeFile(join(tmp, "monitor-log-cursors.json"), JSON.stringify({ "/x/afk.log": { size: 1, lines: 1 } }), "utf8");
     await writeFile(join(tmp, "statusline-cache.json"), "{}", "utf8");
     await writeFile(join(tmp, "afk-supervisor.log"), "log", "utf8");
     await writeFile(join(tmp, "afk-supervisor.log.jsonl"), "{}", "utf8");
@@ -41,14 +49,24 @@ describe("migrateLegacyDevPaths", () => {
     await writeFile(join(tmp, "runner-circuit", "claude.json"), "{}", "utf8");
 
     const { moved } = await migrateLegacyDevPaths(root);
+    const supervisor = supervisorDir(root, "fleet");
 
-    expect(await readFile(join(afkStateDir(root), "afk-supervisor.pid"), "utf8")).toBe("123");
+    expect(await readFile(join(supervisor, "afk-supervisor.pid"), "utf8")).toBe("123");
     expect(await readFile(join(statuslineStateDir(root), "statusline-cache.toon"), "utf8")).toBe("{}");
-    expect(await readFile(join(afkStateDir(root), "afk-supervisor.log.toonl"), "utf8")).toBe("{}");
+    expect(await readFile(join(supervisor, "supervisor.log.toonl"), "utf8")).toBe("{}");
+    expect(decode(await readFile(join(afkStateDir(root), "supervisors", "fleet", "state.toon"), "utf8"))).toMatchObject({
+      kind: "supervisor",
+      id: "fleet",
+    });
+    expect(decode(await readFile(join(monitorDir(root, "default"), "log-cursors.toon"), "utf8"))).toEqual({
+      "/x/afk.log": { size: 1, lines: 1 },
+    });
     expect(await readFile(join(afkStateDir(root), "runner-circuit", "claude.json"), "utf8")).toBe("{}");
     // Legacy copies are gone (moved, not copied).
     expect(await exists(join(tmp, "afk-supervisor.pid"))).toBe(false);
+    expect(await exists(join(tmp, "afk-supervisor.log"))).toBe(false);
     expect(moved).toContain("afk-supervisor.pid");
+    expect(moved).toContain("afk-supervisor.state.json");
     expect(moved).toContain("afk-supervisor.log.jsonl");
   });
 
@@ -71,10 +89,10 @@ describe("migrateLegacyDevPaths", () => {
     await migrateLegacyDevPaths(root);
     const second = await migrateLegacyDevPaths(root);
     expect(second.moved).toEqual([]);
-    expect(await readFile(join(afkStateDir(root), "afk-supervisor.pid"), "utf8")).toBe("9");
+    expect(await readFile(join(supervisorDir(root, "fleet"), "afk-supervisor.pid"), "utf8")).toBe("9");
   });
 
-  it("relocates already-state-tier legacy AFK artifacts to the castle state lane", async () => {
+  it("relocates already-state-tier legacy AFK artifacts to the split castle/tmp lanes", async () => {
     const root = await freshRoot();
     const legacyAfk = legacyAfkStateDir(root);
     await mkdir(join(legacyAfk, "runner-circuit"), { recursive: true });
@@ -85,8 +103,8 @@ describe("migrateLegacyDevPaths", () => {
 
     const { moved } = await migrateLegacyDevPaths(root);
 
-    expect(await readFile(join(afkStateDir(root), "afk-supervisor.pid"), "utf8")).toBe("321");
-    expect(await readFile(join(afkStateDir(root), "afk-supervisor.log.toonl"), "utf8")).toBe("[0]{ts,msg}:\n");
+    expect(await readFile(join(supervisorDir(root, "fleet"), "afk-supervisor.pid"), "utf8")).toBe("321");
+    expect(await readFile(join(supervisorDir(root, "fleet"), "supervisor.log.toonl"), "utf8")).toBe("[0]{ts,msg}:\n");
     expect(await readFile(join(afkStateDir(root), "runner-circuit", "codex.json"), "utf8")).toBe("{}");
     expect(await readFile(join(afkStateDir(root), "history.toonl"), "utf8")).toBe(
       "[0]{ts,epoch,worker,issue,event,duration_s,runner,merge_sha,reason}:\n",
@@ -117,9 +135,9 @@ describe("migrateLegacyDevPaths", () => {
   it("never deletes the legacy copy when the canonical copy already exists (ambiguous)", async () => {
     const root = await freshRoot();
     const legacy = join(tmpDir(root), "afk-supervisor.pid");
-    const current = join(afkStateDir(root), "afk-supervisor.pid");
+    const current = join(supervisorDir(root, "fleet"), "afk-supervisor.pid");
     await writeFile(legacy, "legacy", "utf8");
-    await mkdir(afkStateDir(root), { recursive: true });
+    await mkdir(supervisorDir(root, "fleet"), { recursive: true });
     await writeFile(current, "current", "utf8");
 
     const { moved } = await migrateLegacyDevPaths(root);
