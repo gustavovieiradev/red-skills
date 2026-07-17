@@ -64,7 +64,9 @@ export interface RspTelemetryStats {
     dollars_saved_high_usd: number | null;
     pricing_model_family: string;
     pricing_input_usd_per_million_tokens: number;
+    pricing_row_label: string;
     pricing_note: string;
+    token_count_source: "tokenizer" | "byte-estimate" | "mixed";
     daily_tokens_saved: Array<{ date: string; tokens_saved: number }>;
     top_commands: Array<{ command: string; invocations: number; bytes_saved: number; tokens_saved: number }>;
   };
@@ -146,14 +148,46 @@ export interface RspTelemetryGainsReport {
   };
   savings: {
     tokens: TokenSavingsEstimate;
-    weekly_tokens_saved: Array<{ week_start: string; tokens_saved: number; wow_delta_pct: number | null }>;
+    weekly_tokens_saved: Array<{
+      week_start: string;
+      tokens_saved: number;
+      tokens_saved_estimated: boolean;
+      token_count_source: "tokenizer" | "byte-estimate" | "mixed";
+      wow_delta_pct: number | null;
+    }>;
+    holdout: {
+      enabled: boolean;
+      configured_share: number;
+      observed_share: number;
+      samples: number;
+      treatment_samples: number;
+      measured_tokens_saved_mean: number | null;
+      measured_tokens_saved_ci95_low: number | null;
+      measured_tokens_saved_ci95_high: number | null;
+    };
     elision_rate: number;
-    top_commands_by_tokens_saved: Array<{ command_family: string; invocations: number; tokens_saved: number; bytes_saved: number }>;
-    top_commands_by_invocation_count: Array<{ command_family: string; invocations: number; tokens_saved: number; bytes_saved: number }>;
+    top_commands_by_tokens_saved: Array<{
+      command_family: string;
+      invocations: number;
+      tokens_saved: number;
+      tokens_saved_estimated: boolean;
+      token_count_source: "tokenizer" | "byte-estimate" | "mixed";
+      bytes_saved: number;
+    }>;
+    top_commands_by_invocation_count: Array<{
+      command_family: string;
+      invocations: number;
+      tokens_saved: number;
+      tokens_saved_estimated: boolean;
+      token_count_source: "tokenizer" | "byte-estimate" | "mixed";
+      bytes_saved: number;
+    }>;
     single_biggest_elision: {
       timestamp: string;
       command_family: string;
       tokens_saved: number;
+      tokens_saved_estimated: boolean;
+      token_count_source: "tokenizer" | "byte-estimate" | "mixed";
       bytes_saved: number;
     } | null;
   };
@@ -163,6 +197,11 @@ export interface RspTelemetryGainsReport {
     cold_boots: number | null;
     warm_hits: number | null;
   };
+  mining: {
+    recovery_usage_by_family: Array<{ command_family: string; shows: number; hits: number; misses: number; hit_rate: number }>;
+    degradation_clusters: Array<{ command_family: string; reason: string; count: number }>;
+    threshold_tuning_suggestions: string[];
+  };
 }
 
 export interface LatencyPercentiles {
@@ -170,6 +209,12 @@ export interface LatencyPercentiles {
   wrapper_ms_p90: number | null;
   wrapper_ms_p95: number | null;
   wrapper_ms_p99: number | null;
+}
+
+interface TokenSavingsBucket {
+  tokens_saved: number;
+  tokenizer_rows: number;
+  estimated_rows: number;
 }
 
 /**
@@ -678,7 +723,9 @@ export async function readTelemetryStats(db: RedDB, sinceDays: number, now = new
       dollars_saved_high_usd: savingsEstimate.dollars_saved_high_usd,
       pricing_model_family: savingsEstimate.pricing_model_family,
       pricing_input_usd_per_million_tokens: savingsEstimate.pricing_input_usd_per_million_tokens,
+      pricing_row_label: savingsEstimate.pricing_row_label,
       pricing_note: savingsEstimate.pricing_note,
+      token_count_source: savingsEstimate.token_count_source,
       daily_tokens_saved: [...byDay.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([date, saved]) => ({ date, tokens_saved: saved })),
@@ -774,6 +821,9 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
   const invocations = accounting.filter((record) =>
     stringField(record.event_type) !== "show" && stringField(record.degradation_reason) === ""
   );
+  const treatmentInvocations = invocations.filter((record) => record.holdout !== true);
+  const holdoutInvocations = invocations.filter((record) => record.holdout === true);
+  const showRecords = accounting.filter((record) => stringField(record.event_type) === "show");
   const degradations = accounting.filter((record) => stringField(record.degradation_reason) !== "");
   const allTimestamps = [...invocations, ...degradations]
     .map(timestampMs)
@@ -786,26 +836,32 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
   const requestsByDay = new Map<string, number>();
   const requestsByMinute = new Map<string, number>();
   const heatmap = new Map<string, number>();
-  const weeklyTokens = new Map<string, number>();
-  const commandTotals = new Map<string, { command_family: string; invocations: number; tokens_saved: number; bytes_saved: number }>();
+  const weeklyTokens = new Map<string, TokenSavingsBucket>();
+  const commandTotals = new Map<string, TokenSavingsBucket & { command_family: string; invocations: number; bytes_saved: number }>();
   let totalTokensSaved = 0;
-  let tokensEstimated = false;
+  let estimatedSavingsRows = 0;
+  let tokenizerSavingsRows = 0;
   let elided = 0;
   let biggest: RspTelemetryGainsReport["savings"]["single_biggest_elision"] = null;
   let recordsWithStoreMetric = 0;
   let coldBoots = 0;
+  const treatmentSavingsSamples: number[] = [];
 
-  for (const record of invocations) {
+  for (const record of treatmentInvocations) {
     const timestamp = timestampString(record);
     const date = timestamp.slice(0, 10);
     const minute = timestamp.slice(0, 16);
     const family = commandFamily(stringField(record.command));
-    const tokensSaved = Math.max(
-      0,
-      tokenCountFromCounters(record, "raw").tokens - tokenCountFromCounters(record, "emitted").tokens,
-    );
+    const rawTokens = tokenCountFromCounters(record, "raw");
+    const emittedTokens = tokenCountFromCounters(record, "emitted");
+    const tokensSaved = Math.max(0, rawTokens.tokens - emittedTokens.tokens);
     totalTokensSaved += tokensSaved;
-    tokensEstimated ||= record.estimated === true && tokensSaved > 0;
+    const source = record.estimated === true || rawTokens.estimated || emittedTokens.estimated ? "byte-estimate" : "tokenizer";
+    if (tokensSaved > 0) {
+      treatmentSavingsSamples.push(tokensSaved);
+      if (source === "byte-estimate") estimatedSavingsRows++;
+      else tokenizerSavingsRows++;
+    }
     const bytesSaved = Math.max(0, numeric(record.raw_bytes) - numeric(record.emitted_bytes));
     const latency = optionalNumeric(record.wrapper_ms);
     if (latency != null) {
@@ -819,10 +875,19 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
     const heatmapKey = heatmapKeyFor(timestamp);
     if (heatmapKey) heatmap.set(heatmapKey, (heatmap.get(heatmapKey) ?? 0) + 1);
     const week = weekStartDate(timestamp);
-    if (week) weeklyTokens.set(week, (weeklyTokens.get(week) ?? 0) + tokensSaved);
-    const totals = commandTotals.get(family) ?? { command_family: family, invocations: 0, tokens_saved: 0, bytes_saved: 0 };
+    if (week) addTokenSavings(weeklyTokens, week, tokensSaved, source);
+    const totals = commandTotals.get(family) ?? {
+      command_family: family,
+      invocations: 0,
+      tokens_saved: 0,
+      tokenizer_rows: 0,
+      estimated_rows: 0,
+      bytes_saved: 0,
+    };
     totals.invocations++;
     totals.tokens_saved += tokensSaved;
+    if (tokensSaved > 0 && source === "byte-estimate") totals.estimated_rows++;
+    if (tokensSaved > 0 && source === "tokenizer") totals.tokenizer_rows++;
     totals.bytes_saved += bytesSaved;
     commandTotals.set(family, totals);
     if (record.elided === true) elided++;
@@ -831,7 +896,14 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
       if (numeric(record.store_open_count) > 0) coldBoots++;
     }
     if (tokensSaved > 0 && (!biggest || tokensSaved > biggest.tokens_saved || (tokensSaved === biggest.tokens_saved && bytesSaved > biggest.bytes_saved))) {
-      biggest = { timestamp, command_family: family, tokens_saved: tokensSaved, bytes_saved: bytesSaved };
+      biggest = {
+        timestamp,
+        command_family: family,
+        tokens_saved: tokensSaved,
+        tokens_saved_estimated: source === "byte-estimate",
+        token_count_source: source,
+        bytes_saved: bytesSaved,
+      };
     }
   }
 
@@ -848,6 +920,8 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
   }
   const peakMinute = [...requestsByMinute.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  const savingsTokens = tokenSavingsEstimate(totalTokensSaved, estimatedSavingsRows > 0);
+  savingsTokens.token_count_source = savingsTokenSource();
 
   return {
     schema_version: "red.rsp.gains.v1",
@@ -878,14 +952,17 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
       hour_weekday_heatmap: renderHeatmapRows(heatmap),
     },
     savings: {
-      tokens: tokenSavingsEstimate(totalTokensSaved, tokensEstimated),
+      tokens: savingsTokens,
       weekly_tokens_saved: weeklySeries(weeklyTokens),
-      elision_rate: invocations.length === 0 ? 0 : round(elided / invocations.length),
+      holdout: holdoutSummary(holdoutInvocations, treatmentInvocations, treatmentSavingsSamples),
+      elision_rate: treatmentInvocations.length === 0 ? 0 : round(elided / treatmentInvocations.length),
       top_commands_by_tokens_saved: [...commandTotals.values()]
         .sort((a, b) => b.tokens_saved - a.tokens_saved || b.bytes_saved - a.bytes_saved || a.command_family.localeCompare(b.command_family))
+        .map(withTokenSavingsLabel)
         .slice(0, 10),
       top_commands_by_invocation_count: [...commandTotals.values()]
         .sort((a, b) => b.invocations - a.invocations || b.tokens_saved - a.tokens_saved || a.command_family.localeCompare(b.command_family))
+        .map(withTokenSavingsLabel)
         .slice(0, 10),
       single_biggest_elision: biggest,
     },
@@ -897,14 +974,106 @@ export async function readTelemetryGainsReport(db: RedDB, sinceDays: number, now
       cold_boots: recordsWithStoreMetric === 0 ? null : coldBoots,
       warm_hits: recordsWithStoreMetric === 0 ? null : Math.max(0, recordsWithStoreMetric - coldBoots),
     },
+    mining: {
+      recovery_usage_by_family: recoveryUsageByFamily(showRecords),
+      degradation_clusters: degradationClusters(degradationTimeline),
+      threshold_tuning_suggestions: thresholdTuningSuggestions(commandTotals, showRecords, degradationTimeline),
+    },
   };
+
+  function savingsTokenSource(): "tokenizer" | "byte-estimate" | "mixed" {
+    if (estimatedSavingsRows > 0 && tokenizerSavingsRows > 0) return "mixed";
+    if (estimatedSavingsRows > 0) return "byte-estimate";
+    return "tokenizer";
+  }
+}
+
+function holdoutSummary(
+  holdouts: readonly Record<string, unknown>[],
+  treatments: readonly Record<string, unknown>[],
+  treatmentSavingsSamples: readonly number[],
+): RspTelemetryGainsReport["savings"]["holdout"] {
+  const total = holdouts.length + treatments.length;
+  const configured = holdouts.reduce((max, record) => Math.max(max, optionalNumeric(record.holdout_share) ?? 0), 0);
+  const ci = confidenceInterval95(treatmentSavingsSamples);
+  return {
+    enabled: configured > 0 || holdouts.length > 0,
+    configured_share: round(configured),
+    observed_share: total === 0 ? 0 : round(holdouts.length / total),
+    samples: holdouts.length,
+    treatment_samples: treatments.length,
+    measured_tokens_saved_mean: ci.mean,
+    measured_tokens_saved_ci95_low: ci.low,
+    measured_tokens_saved_ci95_high: ci.high,
+  };
+}
+
+function confidenceInterval95(values: readonly number[]): { mean: number | null; low: number | null; high: number | null } {
+  if (values.length === 0) return { mean: null, low: null, high: null };
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  if (values.length === 1) {
+    const rounded = round(mean);
+    return { mean: rounded, low: rounded, high: rounded };
+  }
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
+  const margin = 1.96 * Math.sqrt(variance / values.length);
+  return {
+    mean: round(mean),
+    low: round(Math.max(0, mean - margin)),
+    high: round(mean + margin),
+  };
+}
+
+function recoveryUsageByFamily(records: readonly Record<string, unknown>[]): RspTelemetryGainsReport["mining"]["recovery_usage_by_family"] {
+  const byFamily = new Map<string, { command_family: string; shows: number; hits: number; misses: number; hit_rate: number }>();
+  for (const record of records) {
+    const family = stringField(record.handle_family) || commandFamily(stringField(record.command));
+    const row = byFamily.get(family) ?? { command_family: family, shows: 0, hits: 0, misses: 0, hit_rate: 0 };
+    row.shows++;
+    if (record.hit === true) row.hits++;
+    else row.misses++;
+    row.hit_rate = round(row.hits / row.shows);
+    byFamily.set(family, row);
+  }
+  return [...byFamily.values()].sort((a, b) => b.shows - a.shows || a.command_family.localeCompare(b.command_family));
+}
+
+function degradationClusters(
+  timeline: readonly { timestamp: string; command_family: string; reason: string }[],
+): RspTelemetryGainsReport["mining"]["degradation_clusters"] {
+  const clusters = new Map<string, { command_family: string; reason: string; count: number }>();
+  for (const entry of timeline) {
+    const key = `${entry.command_family}\0${entry.reason}`;
+    const row = clusters.get(key) ?? { command_family: entry.command_family, reason: entry.reason, count: 0 };
+    row.count++;
+    clusters.set(key, row);
+  }
+  return [...clusters.values()].sort((a, b) => b.count - a.count || a.command_family.localeCompare(b.command_family) || a.reason.localeCompare(b.reason));
+}
+
+function thresholdTuningSuggestions(
+  commandTotals: ReadonlyMap<string, { command_family: string; invocations: number; tokens_saved: number; bytes_saved: number }>,
+  showRecords: readonly Record<string, unknown>[],
+  degradationTimeline: readonly { timestamp: string; command_family: string; reason: string }[],
+): string[] {
+  const suggestions: string[] = [];
+  for (const row of [...commandTotals.values()].sort((a, b) => b.tokens_saved - a.tokens_saved || a.command_family.localeCompare(b.command_family)).slice(0, 3)) {
+    if (row.tokens_saved > 0) {
+      suggestions.push(`${row.command_family}: keep current threshold candidate; ${row.tokens_saved} tokens saved across ${row.invocations} treatment invocations.`);
+    }
+  }
+  for (const row of recoveryUsageByFamily(showRecords).filter((entry) => entry.hit_rate >= 0.5).slice(0, 3)) {
+    suggestions.push(`${row.command_family}: audit terse threshold; ${row.shows} recovery handle reads indicate users needed original output.`);
+  }
+  for (const row of degradationClusters(degradationTimeline).slice(0, 3)) {
+    suggestions.push(`${row.command_family}: hold or raise threshold until '${row.reason}' degradation cluster is fixed (${row.count}).`);
+  }
+  return suggestions;
 }
 
 async function readAccountingRecords(db: RedDB, sinceMs: number): Promise<Array<Record<string, unknown>>> {
   const accounting = (await readCollection(db, RSP_ACCOUNTING_EVENTS_COLLECTION))
     .filter((record) => timestampMs(record) >= sinceMs);
-  if (accounting.length > 0) return accounting;
-
   const legacyInvocations = (await readCollection(db, RSP_TELEMETRY_INVOCATIONS_COLLECTION))
     .filter((record) => timestampMs(record) >= sinceMs)
     .map((record) => ({ ...record, event_type: "invocation" }));
@@ -915,6 +1084,12 @@ async function readAccountingRecords(db: RedDB, sinceMs: number): Promise<Array<
       event_type: "invocation",
       degradation_reason: stringField(record.reason) || "unknown",
     }));
+  if (accounting.length > 0) {
+    const hasAccountingInvocations = accounting.some((record) =>
+      stringField(record.event_type) !== "show" || stringField(record.degradation_reason) !== ""
+    );
+    return hasAccountingInvocations ? accounting : [...accounting, ...legacyInvocations, ...legacyDegradations];
+  }
   return [...legacyInvocations, ...legacyDegradations];
 }
 
@@ -1053,14 +1228,49 @@ function weekStartDate(timestamp: string): string | null {
   return start.toISOString().slice(0, 10);
 }
 
-function weeklySeries(weeklyTokens: Map<string, number>): Array<{ week_start: string; tokens_saved: number; wow_delta_pct: number | null }> {
+function addTokenSavings(buckets: Map<string, TokenSavingsBucket>, key: string, tokens: number, source: "tokenizer" | "byte-estimate"): void {
+  const bucket = buckets.get(key) ?? { tokens_saved: 0, tokenizer_rows: 0, estimated_rows: 0 };
+  bucket.tokens_saved += tokens;
+  if (tokens > 0 && source === "byte-estimate") bucket.estimated_rows++;
+  if (tokens > 0 && source === "tokenizer") bucket.tokenizer_rows++;
+  buckets.set(key, bucket);
+}
+
+function tokenSavingsSource(bucket: TokenSavingsBucket): "tokenizer" | "byte-estimate" | "mixed" {
+  if (bucket.estimated_rows > 0 && bucket.tokenizer_rows > 0) return "mixed";
+  if (bucket.estimated_rows > 0) return "byte-estimate";
+  return "tokenizer";
+}
+
+function withTokenSavingsLabel<T extends TokenSavingsBucket>(row: T): Omit<T, "tokenizer_rows" | "estimated_rows"> & {
+  tokens_saved_estimated: boolean;
+  token_count_source: "tokenizer" | "byte-estimate" | "mixed";
+} {
+  const source = tokenSavingsSource(row);
+  const { tokenizer_rows: _tokenizerRows, estimated_rows: _estimatedRows, ...publicRow } = row;
+  return {
+    ...publicRow,
+    tokens_saved_estimated: source !== "tokenizer",
+    token_count_source: source,
+  };
+}
+
+function weeklySeries(weeklyTokens: Map<string, TokenSavingsBucket>): RspTelemetryGainsReport["savings"]["weekly_tokens_saved"] {
   let previous: number | null = null;
   return [...weeklyTokens.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([week_start, tokens_saved]) => {
+    .map(([week_start, bucket]) => {
+      const tokens_saved = bucket.tokens_saved;
       const wow_delta_pct = previous == null || previous === 0 ? null : round(((tokens_saved - previous) / previous) * 100);
       previous = tokens_saved;
-      return { week_start, tokens_saved, wow_delta_pct };
+      const source = tokenSavingsSource(bucket);
+      return {
+        week_start,
+        tokens_saved,
+        tokens_saved_estimated: source !== "tokenizer",
+        token_count_source: source,
+        wow_delta_pct,
+      };
     });
 }
 
