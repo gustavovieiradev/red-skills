@@ -58,6 +58,13 @@ describe("cli routing — native commands", () => {
     });
   });
 
+  it("routes doctor with fix flags preserved", () => {
+    expect(parseCli(["doctor", "--fix", "--yes"])).toEqual({
+      command: "doctor",
+      args: ["--fix", "--yes"],
+    });
+  });
+
   it("routes daily and weekly review commands", () => {
     expect(parseCli(["daily-review", "--json"])).toEqual({ command: "daily-review", args: ["--json"] });
     expect(parseCli(["weekly-review"])).toEqual({ command: "weekly-review", args: [] });
