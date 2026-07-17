@@ -60,6 +60,11 @@ import {
   executeSpecSubIssueReconcile,
   type SpecSubIssueCandidate,
 } from "./spec-subissue-reconciler.js";
+import {
+  assertOperationalProbesGreen,
+  evaluateOperationalProbes,
+  type OperationalProbeReport,
+} from "./operational-probes.js";
 import { LABEL_HUMAN, LABEL_READY, LABEL_RUNNING } from "./triage-labels.js";
 
 // ---------- precheck (hard preconditions) ----------
@@ -71,7 +76,6 @@ export type Precondition =
   | "gh-missing"
   | "gh-unauthenticated"
   | "not-a-git-repo"
-  | "https-remote-forbidden"
   | "no-main-branch"
   | "not-on-trunk"
   | "pnpm-missing";
@@ -134,21 +138,13 @@ export type PrecheckResult =
   | { ok: false; failed: "not-on-trunk"; detail: BranchPreconditionDetail };
 
 /** Evaluate the hard preconditions in afk.sh order. The `die` ladder is:
- *   gh installed → gh authenticated → is-git-repo → no https remote →
- *   local main exists → on the resolved focal branch. pnpm is the lone soft
- *   check (warn, not die), evaluated last so a clean pass still reports the
- *   warning. */
+ *   gh installed → gh authenticated → is-git-repo → local main exists → on the
+ *   resolved focal branch. pnpm is the lone soft check (warn, not die),
+ *   evaluated last so a clean pass still reports the warning. */
 export function precheck(facts: PrecheckFacts): PrecheckResult {
   if (!facts.ghInstalled) return { ok: false, failed: "gh-missing" };
   if (!facts.ghAuthenticated) return { ok: false, failed: "gh-unauthenticated" };
   if (!facts.isGitRepo) return { ok: false, failed: "not-a-git-repo" };
-  if (!facts.allowHttpsRemote) {
-    for (const url of facts.remoteUrls) {
-      if (url.startsWith("https://")) {
-        return { ok: false, failed: "https-remote-forbidden", detail: url };
-      }
-    }
-  }
   if (!facts.hasMainBranch) return { ok: false, failed: "no-main-branch" };
   const expectedBranch = facts.lockedBranch ?? facts.configuredTrunk ?? "main";
   if (facts.currentBranch !== expectedBranch) {
@@ -454,6 +450,7 @@ export interface DocsSweepResult {
  * only `precheck` is populated (the bash `die` aborts before any other step). */
 export interface BootResult {
   precheck: PrecheckResult;
+  operationalProbes?: OperationalProbeReport;
   bootstrap?: { ok: true };
   orphanCleanup?: OrphanCleanupResult;
   attemptCap?: AttemptCapResult;
@@ -509,6 +506,10 @@ export async function runBoot(deps: BootDeps, options: BootOptions): Promise<Boo
   const pre = precheck(options.precheck);
   if (!pre.ok) return { precheck: pre };
 
+  // ---- 1a. operational probes ----
+  const operationalProbes = await evaluateOperationalProbes({ precheck: options.precheck });
+  assertOperationalProbesGreen(operationalProbes);
+
   // ---- 2. bootstrap ----
   const b = options.bootstrap;
   await deps.fs.ensureDir(b.tmpDir);
@@ -525,7 +526,7 @@ export async function runBoot(deps: BootDeps, options: BootOptions): Promise<Boo
   // branch cleanup, unblock sweep, reconcile sweep, or straggler check). This is
   // what makes a respawn cheap and keeps peers from racing over boot state.
   if (options.skipSweeps) {
-    return { precheck: pre, bootstrap: { ok: true } };
+    return { precheck: pre, operationalProbes, bootstrap: { ok: true } };
   }
 
   // ---- 3. orphan cleanup ----
@@ -560,6 +561,7 @@ export async function runBoot(deps: BootDeps, options: BootOptions): Promise<Boo
 
   return {
     precheck: pre,
+    operationalProbes,
     bootstrap: { ok: true },
     orphanCleanup,
     attemptCap,
