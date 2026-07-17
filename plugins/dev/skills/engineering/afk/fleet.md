@@ -64,6 +64,47 @@ not part of the current fleet contract.
    - Codex monitor unavailable: `monitor loop unavailable in this runner; run /dev:afk monitor or tail .red/state/castle/afk-supervisor.log manually.`
    - Bare/unknown: `monitor loop unavailable in this runner; run /dev:afk monitor or tail .red/state/castle/afk-supervisor.log manually.`
 
+### Live resize and runner switch
+
+Re-running `/dev:afk fleet <N>` while a healthy supervisor is already live does
+not launch a second supervisor. It writes `.red/state/castle/afk-supervisor.resize.json`
+as the live directive the supervisor polls on every tick. The directive carries:
+
+- `target`: desired worker count.
+- `shrink_mode`: `drain-then-retire` by default, or `hard-kill` when the command
+  is invoked with `--shrink-mode hard-kill`.
+- `runner`: optional. Set it with `--runner <runner>` or `RED_AFK_RUNNER=<runner>`
+  when the intent is to switch the live fleet runner.
+
+Examples:
+
+```bash
+red-skills-dev fleet 4
+red-skills-dev fleet 1 --shrink-mode drain-then-retire
+red-skills-dev fleet 2 --runner codex
+RED_AFK_RUNNER=opencode red-skills-dev fleet 2
+```
+
+On a target increase, the supervisor appends slots and spawns them immediately.
+On a target decrease, `drain-then-retire` asks trailing slots to finish their
+current claim and exit before removal; `hard-kill` kills those trailing worker
+trees, reconciles any stranded `running` claim through the crash-reconcile path,
+and removes the slots immediately.
+
+On a runner change, the supervisor re-pins its applied runner config first, then
+marks every current slot for `drain-then-retire`. Live workers receive their
+retire file and finish their in-flight claim before exiting. As drained slots are
+removed, replacement slots are spawned with the new runner and worker
+`RED_AFK_RUNNER` environment. A directive whose runner already matches the
+applied runner is a no-op: it must not roll slots needlessly.
+
+Every heartbeat echoes the applied `target`, `runner`, and `shrink_mode`.
+Immediately after writing the directive, the launcher reads the heartbeat and
+prints `directive applied (...)` when all three applied fields already match, or
+`directive pending (...)` while the supervisor has not ticked or has not finished
+applying the directive yet. `pending` is not a failure; it is the normal
+acknowledgement before the next supervisor tick or before drain convergence.
+
 ### `/dev:afk fleet stop` — graceful shutdown
 
 Steps, in order:
