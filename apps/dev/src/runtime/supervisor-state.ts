@@ -32,9 +32,15 @@ async function exists(path: string): Promise<boolean> {
 async function supervisorArtifactPaths(dir: string): Promise<string[]> {
   const out = [
     join(dir, "afk-supervisor.pid"),
+    join(dir, "afk-supervisor-boot.pid"),
     join(dir, "afk-supervisor.state.json"),
     join(dir, "afk-supervisor.state.json.tmp"),
     join(dir, "afk-supervisor.stop"),
+    join(dir, "afk-supervisor.resize.json"),
+    join(dir, "afk-supervisor.restarts.json"),
+    join(dir, "resize.toon"),
+    join(dir, "restarts.toon"),
+    join(dir, "supervisor.log.toonl"),
   ];
   try {
     for (const entry of await readdir(dir)) {
