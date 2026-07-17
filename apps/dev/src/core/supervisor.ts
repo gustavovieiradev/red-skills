@@ -207,6 +207,13 @@ export type ElasticShrinkMode = "hard-kill" | "drain-then-retire";
 export interface ElasticResizeRequest {
   target: number;
   shrinkMode?: ElasticShrinkMode;
+  runner?: string;
+}
+
+interface ResolvedElasticDirective {
+  target: number;
+  shrinkMode: ElasticShrinkMode;
+  runner: string;
 }
 
 export type DrainBudgetTier = "OK" | "WARNING" | "CRITICAL" | "HARD_STOP";
@@ -702,6 +709,11 @@ export interface FleetHeartbeat {
   /** Runner this fleet was launched with — lets the watchdog relaunch a recovered
    * supervisor with the same runner instead of re-detecting from its own tree. */
   runner: string;
+  /** Currently applied worker-count target. May differ from slotsTotal while a
+   * drain-then-retire shrink or runner switch is still converging. */
+  target: number;
+  /** Currently applied runtime shrink behavior. */
+  shrinkMode: ElasticShrinkMode;
   /** Dev bundle version the running supervisor was launched from. */
   bundleVersion?: string;
   readyForAgent: number;
@@ -872,6 +884,9 @@ export interface SupervisorDeps {
   /** Runtime elastic fleet request, typically read from the state/afk control
    * file written by `fleet N`. Null means keep the launched config target. */
   resizeRequest?(): Promise<ElasticResizeRequest | null>;
+  /** Re-pin runtime closures that spawn workers or dispatch hooks after a live
+   * directive changes the applied runner/target/shrink-mode. */
+  applyRuntimeConfig?(config: Pick<SupervisorConfig, "target" | "runner" | "shrinkMode">): void | Promise<void>;
 }
 
 // ---------- per-slot runtime state ----------
@@ -922,6 +937,9 @@ export interface SlotState {
   contest: ReapContestState | null;
   /** Slot is above the current target and should not claim another issue. */
   retiring: boolean;
+  /** Why the slot is retiring; runner-switch retires must not be cancelled by a
+   * target that still equals the current slot count. */
+  retiringFor: "shrink" | "runner-switch" | null;
 }
 
 export function freshSlot(): SlotState {
@@ -941,6 +959,7 @@ export function freshSlot(): SlotState {
     halfOpen: false,
     contest: null,
     retiring: false,
+    retiringFor: null,
   };
 }
 
@@ -1274,7 +1293,7 @@ async function emitFleetHeartbeat(
   deps: SupervisorDeps,
   result: TickResult,
   runner: string,
-  config: Pick<SupervisorConfig, "halfOpenBaseS" | "halfOpenCapS" | "circuitWindowS">,
+  config: Pick<SupervisorConfig, "halfOpenBaseS" | "halfOpenCapS" | "circuitWindowS" | "target" | "shrinkMode">,
 ): Promise<{ heartbeat: FleetHeartbeat; write: FleetHeartbeatEmitResult }> {
   // Queue depth was fetched once by superviseTick at the start of this tick
   // and stored in result.queueDepth — reuse it here so there is exactly one
@@ -1287,6 +1306,8 @@ async function emitFleetHeartbeat(
     epoch,
     lastProgressEpoch: state.lastProgressEpoch,
     runner,
+    target: config.target,
+    shrinkMode: config.shrinkMode,
     readyForAgent,
     ...fleetSlotCounts(state, deps),
     spawnsThisTick: result.respawned.length,
@@ -1787,7 +1808,7 @@ async function spawnSlotForBudget(
 async function resolveElasticResize(
   deps: SupervisorDeps,
   config: SupervisorConfig,
-): Promise<Required<ElasticResizeRequest>> {
+): Promise<ResolvedElasticDirective> {
   let request: ElasticResizeRequest | null = null;
   try {
     request = (await deps.resizeRequest?.()) ?? null;
@@ -1801,7 +1822,39 @@ async function resolveElasticResize(
   return {
     target,
     shrinkMode: request?.shrinkMode ?? config.shrinkMode,
+    runner:
+      request?.runner !== undefined && request.runner.trim().length > 0
+        ? request.runner
+        : config.runner,
   };
+}
+
+async function applyRuntimeDirective(
+  deps: SupervisorDeps,
+  config: SupervisorConfig,
+  directive: ResolvedElasticDirective,
+): Promise<boolean> {
+  const runnerChanged = directive.runner !== config.runner;
+  const configChanged =
+    runnerChanged ||
+    directive.target !== config.target ||
+    directive.shrinkMode !== config.shrinkMode;
+  if (!configChanged) return false;
+
+  config.target = directive.target;
+  config.runner = directive.runner;
+  config.shrinkMode = directive.shrinkMode;
+  try {
+    await deps.applyRuntimeConfig?.({
+      target: config.target,
+      runner: config.runner,
+      shrinkMode: config.shrinkMode,
+    });
+  } catch {
+    // Best-effort: the pure supervisor still applies the directive for heartbeat
+    // and scheduling. Runtime adapters should keep this path infallible.
+  }
+  return runnerChanged;
 }
 
 async function growFleetToTarget(
@@ -1813,7 +1866,10 @@ async function growFleetToTarget(
   result: TickResult,
 ): Promise<void> {
   for (const slot of state.slots) {
-    slot.retiring = false;
+    if (slot.retiringFor === "shrink") {
+      slot.retiring = false;
+      slot.retiringFor = null;
+    }
   }
   while (state.slots.length < target) {
     const slotIndex = state.slots.length;
@@ -1879,6 +1935,7 @@ async function shrinkFleetToTarget(
     }
 
     slot.retiring = true;
+    slot.retiringFor = "shrink";
     const pid = slot.pid;
     if (pid !== null && deps.proc.isAlive(pid)) {
       try {
@@ -1889,6 +1946,26 @@ async function shrinkFleetToTarget(
       continue;
     }
     await retireSlotAt(state, i, result);
+  }
+}
+
+async function rollFleetForRunnerSwitch(
+  state: SupervisorState,
+  deps: SupervisorDeps,
+): Promise<void> {
+  for (let i = 0; i < state.slots.length; i += 1) {
+    const slot = state.slots[i]!;
+    if (slot.retiringFor === "runner-switch") continue;
+    slot.retiring = true;
+    slot.retiringFor = "runner-switch";
+    const pid = slot.pid;
+    if (pid !== null && deps.proc.isAlive(pid)) {
+      try {
+        await deps.proc.requestSlotRetire?.(i, pid);
+      } catch {
+        // best-effort
+      }
+    }
   }
 }
 
@@ -2189,26 +2266,40 @@ export async function superviseTick(
   const spawnPolicy = spawnPolicyForBudget(state, drainBudget);
 
   const resize = await resolveElasticResize(deps, config);
+  const runnerChanged = await applyRuntimeDirective(deps, config, resize);
   const slotsBeforeResize = state.slots.length;
-  if (resize.target !== slotsBeforeResize) {
+  if (resize.target !== slotsBeforeResize || runnerChanged) {
     await emitSupervisorEvent(deps, {
       kind: "supervisor.scale",
       payload: {
         from: slotsBeforeResize,
         to: resize.target,
         mode: resize.shrinkMode,
+        runner: resize.runner,
+        ...(runnerChanged ? { runner_changed: true } : {}),
       },
     });
   }
-  if (resize.target >= state.slots.length) {
-    for (const slot of state.slots) slot.retiring = false;
+  if (resize.target >= state.slots.length && !runnerChanged) {
+    for (const slot of state.slots) {
+      if (slot.retiringFor === "shrink") {
+        slot.retiring = false;
+        slot.retiringFor = null;
+      }
+    }
   }
-  if (resize.target > state.slots.length && spawnPolicy !== "hard-stop") {
+  if (resize.target > state.slots.length && !runnerChanged && spawnPolicy !== "hard-stop") {
     await growFleetToTarget(state, deps, config, resize.target, drainBudget, result);
   } else if (resize.target < state.slots.length) {
     await shrinkFleetToTarget(state, deps, resize.target, resize.shrinkMode, result);
   }
+  if (runnerChanged) {
+    await rollFleetForRunnerSwitch(state, deps);
+  }
   await retireDrainedSlots(state, deps, result);
+  if (state.slots.length < resize.target && spawnPolicy !== "hard-stop") {
+    await growFleetToTarget(state, deps, config, resize.target, drainBudget, result);
+  }
 
   for (let i = 0; i < state.slots.length; i += 1) {
     await resolveReapContest(i, state.slots[i]!, deps, config);
