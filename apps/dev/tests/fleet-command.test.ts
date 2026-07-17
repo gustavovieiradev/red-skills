@@ -178,14 +178,47 @@ describe("fleet command stale supervisor state", () => {
       vi.mocked(isLivePid).mockReturnValue(true);
       const out = stream();
 
-      const result = await launchFleet(["4", "--shrink-mode", "hard-kill"], root, out);
+      const result = await launchFleet(["4", "--runner", "opencode", "--shrink-mode", "hard-kill"], root, out);
 
       expect(result).toMatchObject({ status: "resized", pid: 12345, target: 4 });
       expect(spawnSupervisor).not.toHaveBeenCalled();
       expect(JSON.parse(readFileSync(afkPaths(root).supervisorResizePath, "utf8"))).toEqual({
         target: 4,
+        runner: "opencode",
         shrink_mode: "hard-kill",
       });
+      expect(String(vi.mocked(out.write).mock.calls.flat().join(""))).toContain("pending");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("launchFleet reports an already-applied live directive from the heartbeat", async () => {
+    const root = scratch();
+    try {
+      const stateAfk = join(root, ".red", "state", "castle");
+      mkdirSync(stateAfk, { recursive: true });
+      writeFileSync(join(stateAfk, "afk-supervisor.pid"), "12345", "utf8");
+      const epoch = Math.floor(Date.now() / 1000);
+      writeFileSync(
+        join(stateAfk, "afk-supervisor.state.json"),
+        JSON.stringify({
+          epoch,
+          last_progress_epoch: epoch,
+          runner: "opencode",
+          target: 4,
+          shrink_mode: "hard-kill",
+          slots: { busy: 4, free: 0, total: 4, parked: 0 },
+        }),
+        "utf8",
+      );
+      vi.mocked(isLivePid).mockReturnValue(true);
+      const out = stream();
+
+      const result = await launchFleet(["4", "--runner", "opencode", "--shrink-mode", "hard-kill"], root, out);
+
+      expect(result).toMatchObject({ status: "resized", pid: 12345, target: 4 });
+      expect(String(vi.mocked(out.write).mock.calls.flat().join(""))).toContain("applied");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
