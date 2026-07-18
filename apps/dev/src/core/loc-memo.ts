@@ -14,6 +14,9 @@
 // injectable — the compute/read/write seams are passed in so the writer wires the
 // real git + fs closures and tests drive it hermetically.
 
+import { decodeDevSnapshotSniff, encodeDevSnapshotToon } from "./toon-snapshot.js";
+import type { JsonValue } from "@reddb-io/toon";
+
 /** The persisted memo: the committed LOC volume anchored to the HEAD it was
  * measured at. */
 export interface LocMemo {
@@ -21,6 +24,21 @@ export interface LocMemo {
   sha: string;
   added: number;
   removed: number;
+}
+
+export function encodeLocMemoToon(memo: LocMemo): string {
+  return encodeDevSnapshotToon(memo as unknown as JsonValue);
+}
+
+export function decodeLocMemoSniff(text: string): LocMemo | null {
+  const decoded = decodeDevSnapshotSniff(text);
+  if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) return null;
+  const rec = decoded as Partial<LocMemo>;
+  const sha = typeof rec.sha === "string" ? rec.sha : "";
+  const added = Number(rec.added);
+  const removed = Number(rec.removed);
+  if (!sha || !Number.isFinite(added) || !Number.isFinite(removed)) return null;
+  return { sha, added, removed };
 }
 
 export interface ResolveAttemptLocInput {
@@ -91,5 +109,5 @@ export async function resolveAttemptLoc(
 
 /** Default on-disk location of an attempt's LOC memo, beside its state file. */
 export function locMemoPath(attemptDir: string, sep = "/"): string {
-  return `${attemptDir}${sep}.loc-memo.json`;
+  return `${attemptDir}${sep}.loc-memo.toon`;
 }
