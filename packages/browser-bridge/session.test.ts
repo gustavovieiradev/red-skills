@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { decodeSnapshotDocument } from "@reddb-io/shared/toon-migration.js";
 import {
   openArtifact,
   recordAnnotation,
@@ -43,6 +44,16 @@ describe("openArtifact", () => {
 
     expect(loadSession(root, "s1")?.id).toBe("s1");
     expect(listSessions(root)).toContain("s1");
+
+    const sessionRaw = readFileSync(join(root, ".red/browser-bridge/s1/session.json"), "utf8");
+    expect(sessionRaw.trim()).not.toMatch(/^\{/);
+    expect(decodeSnapshotDocument(sessionRaw)).toEqual(s);
+  });
+
+  it("loads legacy JSON session state", () => {
+    const s = openArtifact(artifact, { root, sessionId: "s1", now: "2026-06-30T00:00:00Z" });
+    writeFileSync(join(root, ".red/browser-bridge/s1/session.json"), JSON.stringify(s), "utf8");
+    expect(loadSession(root, "s1")).toEqual(s);
   });
 });
 
@@ -79,6 +90,45 @@ describe("annotation round-trip (human -> agent)", () => {
     expect(next.annotations).toHaveLength(1);
     expect(next.annotations[0].id).toBe("a2");
     expect(next.annotations[0].textRange).toBeUndefined();
+
+    const annotationsRaw = readFileSync(join(root, ".red/browser-bridge/s1/annotations.json"), "utf8");
+    expect(annotationsRaw.trim()).not.toMatch(/^\[\s*[{"]/);
+    expect(decodeSnapshotDocument(annotationsRaw)).toEqual([
+      {
+        id: "a1",
+        selector: "#t",
+        textRangeStart: 0,
+        textRangeEnd: 5,
+        textRangeQuote: "Title",
+        comment: "make this bigger",
+        createdAt: "2026-06-30T01:00:00Z",
+        status: "open",
+      },
+      {
+        id: "a2",
+        selector: "p",
+        textRangeStart: null,
+        textRangeEnd: null,
+        textRangeQuote: null,
+        comment: "tighten copy",
+        createdAt: listAnnotations(root, "s1")[1]?.createdAt,
+        status: "open",
+      },
+    ]);
+    expect(listAnnotations(root, "s1")[0].textRange).toEqual({ start: 0, end: 5, quote: "Title" });
+  });
+
+  it("loads legacy JSON annotations", () => {
+    openArtifact(artifact, { root, sessionId: "s1" });
+    const legacy = [{
+      id: "a1",
+      selector: "#t",
+      comment: "legacy",
+      createdAt: "2026-06-30T01:00:00Z",
+      status: "open",
+    }];
+    writeFileSync(join(root, ".red/browser-bridge/s1/annotations.json"), JSON.stringify(legacy), "utf8");
+    expect(listAnnotations(root, "s1")).toEqual(legacy);
   });
 
   it("resolves an annotation the agent acted on", () => {
