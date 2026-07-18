@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { encode as encodeToon } from "@reddb-io/toon";
 import {
@@ -8,7 +7,7 @@ import {
   readCastleLaneRecords,
   type CastleLaneRecord,
 } from "@reddb-io/red-castle/engine";
-import { afkPaths, collectMonitorInputs, readFleetState, resolveRepoSlug } from "../runtime/wire.js";
+import { afkPaths, collectMonitorInputs, readFleetState, resolveLiveFleetSupervisorPid, resolveRepoSlug } from "../runtime/wire.js";
 import { migrateLegacyDevPaths } from "../runtime/red-path-migration.js";
 import { parseRunnerFlag, detectRunner } from "../core/runner-detection.js";
 import { callerProcessTreeNative } from "../runtime/caller-process.js";
@@ -32,15 +31,7 @@ export interface FleetStopResult {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const FLEET_SUPERVISOR_FALLBACK_MAX_AGE_S = 120;
 
 function parsePositiveNumber(raw: string | undefined, flag: string): number {
   if (raw === undefined) throw new Error(`${flag} requires a value`);
@@ -172,6 +163,52 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
       stdout.write(`terminated ${killed} orphaned worker${killed === 1 ? "" : "s"} and reconciled their claims.\n`);
     }
   };
+  const state = await readFleetState(paths.fleetStatePath).catch(() => null);
+  const stateFresh =
+    state !== null &&
+    Math.floor(Date.now() / 1000) - state.epoch <= FLEET_SUPERVISOR_FALLBACK_MAX_AGE_S;
+  const resolvedPid = await resolveLiveFleetSupervisorPid(root, {
+    allowCastleSnapshotFallback: stateFresh,
+    livePid: isLivePid,
+  });
+  if (resolvedPid !== null) {
+    await writeFile(stopFile, "", "utf8");
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (!isLivePid(resolvedPid)) {
+        // The supervisor's own terminateAll should have killed its slots on clean
+        // exit, but sweep detached survivors anyway — a slot the loop lost track of
+        // (moved-pid, mid-spawn) would otherwise outlive the "stopped" report.
+        await sweepOrphans();
+        stdout.write(`🛑 fleet stopped (reason=operator stop requested; supervisor pid=${resolvedPid} exited).\n`);
+        return { status: "stopped", pid: resolvedPid };
+      }
+      await sleep(1_000);
+    }
+
+    // Graceful stop timed out: a SIGTERM-ignoring supervisor (and its worker tree)
+    // is still alive. Never report "stopped" while survivors linger (#580) —
+    // escalate to the shared wait-and-escalate killer (SIGTERM → SIGKILL → confirm)
+    // and only report stopped once the tree is confirmed gone.
+    stdout.write(
+      `warn: supervisor pid=${resolvedPid} did not exit within 30s of the stop file; escalating to SIGTERM/SIGKILL.\n`,
+    );
+    const dead = await killTreeAndWait(resolvedPid);
+    if (dead) {
+      // SIGKILL skips the supervisor's own `finally`, so clean its control files.
+      await rm(pidFile, { force: true });
+      await rm(stopFile, { force: true });
+      // killTree of the supervisor pid misses the detached workers — sweep them.
+      await sweepOrphans();
+      stdout.write(`🛑 fleet stopped (reason=graceful stop timeout; supervisor pid=${resolvedPid} killed).\n`);
+      return { status: "stopped", pid: resolvedPid };
+    }
+    stdout.write(
+      `✗ supervisor pid=${resolvedPid} survived SIGKILL; still live — see .red/tmp/supervisors/default/supervisor.log.toonl.\n`,
+    );
+    return { status: "timeout", pid: resolvedPid };
+  }
+
   const supervisor = await reapStaleSupervisorState(stateAfk, isLivePid);
   if (supervisor.status === "stale") {
     await sweepOrphans();
@@ -184,41 +221,9 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
     stdout.write("no fleet running (reason=no supervisor pid).\n");
     return { status: "none" };
   }
-  await writeFile(stopFile, "", "utf8");
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (!(await fileExists(pidFile)) || !isLivePid(pid)) {
-      // The supervisor's own terminateAll should have killed its slots on clean
-      // exit, but sweep detached survivors anyway — a slot the loop lost track of
-      // (moved-pid, mid-spawn) would otherwise outlive the "stopped" report.
-      await sweepOrphans();
-      stdout.write(`🛑 fleet stopped (reason=operator stop requested; supervisor pid=${pid} exited).\n`);
-      return { status: "stopped", pid };
-    }
-    await sleep(1_000);
-  }
-
-  // Graceful stop timed out: a SIGTERM-ignoring supervisor (and its worker tree)
-  // is still alive. Never report "stopped" while survivors linger (#580) —
-  // escalate to the shared wait-and-escalate killer (SIGTERM → SIGKILL → confirm)
-  // and only report stopped once the tree is confirmed gone.
-  stdout.write(
-    `warn: supervisor pid=${pid} did not exit within 30s of the stop file; escalating to SIGTERM/SIGKILL.\n`,
-  );
-  const dead = await killTreeAndWait(pid);
-  if (dead) {
-    // SIGKILL skips the supervisor's own `finally`, so clean its control files.
-    await rm(pidFile, { force: true });
-    await rm(stopFile, { force: true });
-    // killTree of the supervisor pid misses the detached workers — sweep them.
-    await sweepOrphans();
-    stdout.write(`🛑 fleet stopped (reason=graceful stop timeout; supervisor pid=${pid} killed).\n`);
-    return { status: "stopped", pid };
-  }
-  stdout.write(
-    `✗ supervisor pid=${pid} survived SIGKILL; still live — see .red/tmp/supervisors/default/supervisor.log.toonl.\n`,
-  );
-  return { status: "timeout", pid };
+  await sweepOrphans();
+  stdout.write("no fleet running (reason=supervisor pid disappeared before stop).\n");
+  return { status: "none" };
 }
 
 export interface FleetStatusResult {
