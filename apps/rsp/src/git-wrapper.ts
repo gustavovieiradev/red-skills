@@ -46,6 +46,14 @@ export interface GitRenderResult {
   };
 }
 
+interface RawGitPassthrough {
+  __rspRawPassthrough: true;
+  stdout: string;
+  reason: string;
+}
+
+type GitPayloadResult = JsonObject | RawGitPassthrough;
+
 export async function runGitWrapper(argv: readonly string[], options: GitRenderOptions): Promise<GitRenderResult> {
   const parsed = parseGitRenderCommand(argv);
   const subcommand = parseGitSubcommand(parsed.argv);
@@ -71,6 +79,20 @@ export async function renderGitContract(
 
   const subcommand = parseGitSubcommand(parsedCommand.argv);
   const payload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+  if (isRawGitPassthrough(payload)) {
+    return {
+      stdout: Buffer.from(payload.stdout),
+      stderr: Buffer.from(contract.stderr),
+      status: contract.status,
+      signal: contract.signal,
+      rawOutput: Buffer.from(payload.stdout),
+      degradation: {
+        reason: payload.reason,
+        family: "git status",
+        stderrHead: firstLine(contract.stderr),
+      },
+    };
+  }
 
   const fullToon = encode(payload);
   if (shouldEmitFull(subcommand, fullToon, parsedCommand.full, options)) {
@@ -223,7 +245,7 @@ async function collectGitContract(subcommand: GitSubcommand, rest: readonly stri
   });
 }
 
-function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): GitPayloadResult {
   switch (subcommand) {
     case "status":
       return parseStatus(command, stdout, query);
@@ -244,27 +266,41 @@ function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], 
   }
 }
 
-function parseStatus(command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseStatus(command: readonly string[], stdout: string, query?: string): GitPayloadResult {
   let branch = "";
   const rows: JsonObject[] = [];
-  for (const raw of stdout.split("\0")) {
+  let sawUnparsedRecord = false;
+  let previousShortRename = false;
+  const nulSeparated = stdout.includes("\0");
+  for (const raw of splitStatusRecords(stdout)) {
     if (!raw) continue;
     if (raw.startsWith("# branch.head ")) {
       branch = raw.slice("# branch.head ".length);
       continue;
     }
-    if (!raw.startsWith("1 ")) continue;
-    const parts = raw.split(" ");
-    const xy = parts[1] ?? "..";
-    const path = parts.slice(8).join(" ");
-    rows.push({
-      path,
-      index: xy[0] ?? ".",
-      worktree: xy[1] ?? ".",
-      state: statusState(xy),
-    });
+    if (raw.startsWith("# ")) continue;
+    if (raw.startsWith("## ")) {
+      branch = parseShortBranch(raw);
+      previousShortRename = false;
+      continue;
+    }
+    const row = parsePorcelainV2StatusRecord(raw) ?? parseShortStatusRecord(raw);
+    if (row) {
+      rows.push(row);
+      previousShortRename = nulSeparated && row.state === "renamed";
+      continue;
+    }
+    if (nulSeparated && previousShortRename) {
+      previousShortRename = false;
+      continue;
+    }
+    sawUnparsedRecord = true;
+    previousShortRename = false;
   }
-  if (rows.length === 0) return cleanStatusPayload(command.join(" "), branch);
+  if (rows.length === 0) {
+    if (!sawUnparsedRecord) return cleanStatusPayload(command.join(" "), branch);
+    return rawGitPassthrough(stdout, "git-status-unparsed");
+  }
   const filteredRows = filterRows(rows, query);
   const counts = countBy(filteredRows, "state");
   return helpIfQueried({
@@ -287,6 +323,91 @@ export function cleanStatusPayload(command = "git status", branch = ""): JsonObj
     rows: [],
     summary: "git status clean: 0 changes",
   };
+}
+
+function splitStatusRecords(stdout: string): string[] {
+  return stdout.includes("\0") ? stdout.split("\0").filter(Boolean) : stdout.split(/\r?\n/).filter(Boolean);
+}
+
+function parsePorcelainV2StatusRecord(raw: string): JsonObject | null {
+  if (raw.startsWith("1 ")) {
+    const parts = raw.split(" ");
+    const xy = normalizeStatusXY(parts[1] ?? "..");
+    const path = parts.slice(8).join(" ");
+    if (!path) return null;
+    return statusRow(path, xy);
+  }
+  if (raw.startsWith("2 ")) {
+    const parts = raw.split(" ");
+    const xy = normalizeStatusXY(parts[1] ?? "..");
+    const path = parts.slice(9).join(" ");
+    if (!path) return null;
+    return statusRow(path, xy);
+  }
+  if (raw.startsWith("? ")) return statusRow(raw.slice(2), "??");
+  return null;
+}
+
+function parseShortStatusRecord(raw: string): JsonObject | null {
+  const match = /^([ MADRCU?!])([ MADRCU?!]) (.*)$/.exec(raw);
+  if (!match) return null;
+  const xy = normalizeStatusXY(`${match[1] ?? "."}${match[2] ?? "."}`);
+  const path = parseShortStatusPath(match[3] ?? "", xy);
+  if (!path) return null;
+  return statusRow(path, xy);
+}
+
+function statusRow(path: string, xy: string): JsonObject {
+  return {
+    path,
+    index: xy[0] ?? ".",
+    worktree: xy[1] ?? ".",
+    state: statusState(xy),
+  };
+}
+
+function normalizeStatusXY(xy: string): string {
+  return `${xy[0] === " " ? "." : (xy[0] ?? ".")}${xy[1] === " " ? "." : (xy[1] ?? ".")}`;
+}
+
+function parseShortStatusPath(rawPath: string, xy: string): string {
+  let path = rawPath;
+  if (xy.includes("R") || xy.includes("C")) {
+    const arrow = rawPath.lastIndexOf(" -> ");
+    if (arrow >= 0) path = rawPath.slice(arrow + " -> ".length);
+  }
+  return unquoteStatusPath(path);
+}
+
+function unquoteStatusPath(path: string): string {
+  if (!path.startsWith("\"") || !path.endsWith("\"")) return path;
+  try {
+    const decoded = JSON.parse(path) as unknown;
+    if (typeof decoded === "string") return decoded;
+  } catch {}
+  return path.slice(1, -1);
+}
+
+function parseShortBranch(raw: string): string {
+  const text = raw.slice("## ".length).trim();
+  if (text.startsWith("No commits yet on ")) return text.slice("No commits yet on ".length).split(" ")[0] ?? "";
+  const upstream = text.indexOf("...");
+  if (upstream >= 0) return text.slice(0, upstream);
+  const details = text.indexOf(" [");
+  if (details >= 0) return text.slice(0, details);
+  return text;
+}
+
+function rawGitPassthrough(stdout: string, reason: string): RawGitPassthrough {
+  return { __rspRawPassthrough: true, stdout, reason };
+}
+
+function isRawGitPassthrough(payload: GitPayloadResult): payload is RawGitPassthrough {
+  return (payload as RawGitPassthrough).__rspRawPassthrough === true;
+}
+
+function firstLine(text: string): string {
+  return text.split(/\r?\n/)[0] ?? "";
 }
 
 function parseLog(command: readonly string[], stdout: string, query?: string): JsonObject {
@@ -517,9 +638,9 @@ function helpIfQueried(payload: JsonObject, query: string | undefined, help: rea
 
 
 function statusState(xy: string): string {
-  if (xy.includes("A")) return "added";
-  if (xy.includes("D")) return "deleted";
+  if (xy === "??" || xy.includes("?") || xy.includes("A")) return "added";
   if (xy.includes("R")) return "renamed";
+  if (xy.includes("D")) return "deleted";
   if (xy.includes("M")) return "modified";
   return "changed";
 }
