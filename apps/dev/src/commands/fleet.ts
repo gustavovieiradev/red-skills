@@ -17,7 +17,7 @@ import { teardownWedgedSupervisor } from "../core/watchdog.js";
 import { buildWatchdogIO } from "../runtime/watchdog-io.js";
 import { spawnSupervisor } from "../runtime/supervisor-spawn.js";
 import { isLivePid, killTreeAndWait } from "../runtime/kill-tree.js";
-import { reapStaleSupervisorState } from "../runtime/supervisor-state.js";
+import { discoverLiveSupervisorPid, reapStaleSupervisorState } from "../runtime/supervisor-state.js";
 
 export interface FleetLaunchResult {
   status: "launched" | "resized";
@@ -172,14 +172,15 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
       stdout.write(`terminated ${killed} orphaned worker${killed === 1 ? "" : "s"} and reconciled their claims.\n`);
     }
   };
-  const supervisor = await reapStaleSupervisorState(stateAfk, isLivePid);
-  if (supervisor.status === "stale") {
-    await sweepOrphans();
-    stdout.write(`no fleet running (reason=dead supervisor pid; stale files cleaned).\n`);
-    return { status: "stale", ...(supervisor.pid !== undefined ? { pid: supervisor.pid } : {}) };
-  }
-  const pid = supervisor.pid;
+  const discovered = await discoverLiveSupervisorPid(pidFile, dirname(stateAfk), isLivePid);
+  const pid = discovered?.pid;
   if (!pid) {
+    const supervisor = await reapStaleSupervisorState(stateAfk, isLivePid);
+    if (supervisor.status === "stale") {
+      await sweepOrphans();
+      stdout.write(`no fleet running (reason=dead supervisor pid; stale files cleaned).\n`);
+      return { status: "stale", ...(supervisor.pid !== undefined ? { pid: supervisor.pid } : {}) };
+    }
     await sweepOrphans();
     stdout.write("no fleet running (reason=no supervisor pid).\n");
     return { status: "none" };
