@@ -331,6 +331,10 @@ importers:
         version: 2.1.9(@types/node@22.20.1)
 
   packages/browser-bridge:
+    dependencies:
+      '@reddb-io/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
