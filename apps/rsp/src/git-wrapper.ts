@@ -46,6 +46,10 @@ export interface GitRenderResult {
   };
 }
 
+type GitPayloadResult =
+  | { kind: "payload"; payload: JsonObject }
+  | { kind: "passthrough"; stdout: string; reason: string };
+
 export async function runGitWrapper(argv: readonly string[], options: GitRenderOptions): Promise<GitRenderResult> {
   const parsed = parseGitRenderCommand(argv);
   const subcommand = parseGitSubcommand(parsed.argv);
@@ -70,7 +74,23 @@ export async function renderGitContract(
   }
 
   const subcommand = parseGitSubcommand(parsedCommand.argv);
-  const payload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+  const parsedPayload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+  if (parsedPayload.kind === "passthrough") {
+    const stdout = Buffer.from(parsedPayload.stdout);
+    return {
+      stdout,
+      stderr: Buffer.from(contract.stderr),
+      status: contract.status,
+      signal: contract.signal,
+      rawOutput: stdout,
+      degradation: {
+        reason: parsedPayload.reason,
+        family: `git:${subcommand}`,
+        stderrHead: contract.stderr.slice(0, 200),
+      },
+    };
+  }
+  const payload = parsedPayload.payload;
 
   const fullToon = encode(payload);
   if (shouldEmitFull(subcommand, fullToon, parsedCommand.full, options)) {
@@ -223,56 +243,176 @@ async function collectGitContract(subcommand: GitSubcommand, rest: readonly stri
   });
 }
 
-function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): GitPayloadResult {
   switch (subcommand) {
     case "status":
       return parseStatus(command, stdout, query);
     case "log":
-      return parseLog(command, stdout, query);
+      return payloadResult(parseLog(command, stdout, query));
     case "diff":
-      return parseDiff(command, stdout, query);
+      return payloadResult(parseDiff(command, stdout, query));
     case "commit":
-      return helpIfQueried(parseCommit(command, stdout), query, ["rsp git status --query <path-or-state>"]);
+      return payloadResult(helpIfQueried(parseCommit(command, stdout), query, ["rsp git status --query <path-or-state>"]));
     case "push":
-      return helpIfQueried(parsePush(command, stdout), query, ["rsp gh pr list --query <branch>"]);
+      return payloadResult(helpIfQueried(parsePush(command, stdout), query, ["rsp gh pr list --query <branch>"]));
     case "blame":
-      return parseBlame(command, stdout, query);
+      return payloadResult(parseBlame(command, stdout, query));
     case "branch":
-      return parseBranch(command, stdout, query);
+      return payloadResult(parseBranch(command, stdout, query));
     case "show":
-      return parseShow(command, stdout, query);
+      return payloadResult(parseShow(command, stdout, query));
   }
 }
 
-function parseStatus(command: readonly string[], stdout: string, query?: string): JsonObject {
+function payloadResult(payload: JsonObject): GitPayloadResult {
+  return { kind: "payload", payload };
+}
+
+function parseStatus(command: readonly string[], stdout: string, query?: string): GitPayloadResult {
   let branch = "";
   const rows: JsonObject[] = [];
-  for (const raw of stdout.split("\0")) {
+  let classified = false;
+  const records = statusRecords(stdout);
+  for (let i = 0; i < records.length; i += 1) {
+    const raw = records[i] ?? "";
     if (!raw) continue;
     if (raw.startsWith("# branch.head ")) {
       branch = raw.slice("# branch.head ".length);
+      classified = true;
       continue;
     }
-    if (!raw.startsWith("1 ")) continue;
-    const parts = raw.split(" ");
-    const xy = parts[1] ?? "..";
-    const path = parts.slice(8).join(" ");
-    rows.push({
-      path,
-      index: xy[0] ?? ".",
-      worktree: xy[1] ?? ".",
-      state: statusState(xy),
-    });
+    if (raw.startsWith("# branch.")) {
+      classified = true;
+      continue;
+    }
+    if (raw.startsWith("## ")) {
+      branch = parseShortBranch(raw.slice("## ".length));
+      classified = true;
+      continue;
+    }
+    const v2 = parsePorcelainV2StatusRecord(raw, records[i + 1]);
+    if (v2) {
+      if (v2.consumedNext) i += 1;
+      classified = true;
+      rows.push(v2.row);
+      continue;
+    }
+    const short = parseShortStatusRecord(raw, records[i + 1], stdout.includes("\0"));
+    if (short) {
+      if (short.consumedNext) i += 1;
+      classified = true;
+      rows.push(short.row);
+    }
   }
-  if (rows.length === 0) return cleanStatusPayload(command.join(" "), branch);
+  if (rows.length === 0) {
+    if (classified || stdout.trim().length === 0) return payloadResult(cleanStatusPayload(command.join(" "), branch));
+    return { kind: "passthrough", stdout, reason: "git-status-unparsed-output" };
+  }
   const filteredRows = filterRows(rows, query);
   const counts = countBy(filteredRows, "state");
-  return helpIfQueried({
+  return payloadResult(helpIfQueried({
     command: command.join(" "),
     branch,
     rows: filteredRows as JsonValue,
     summary: `${query ? `${filteredRows.length}/${rows.length}` : filteredRows.length} changes: ${counts.added ?? 0} added, ${counts.modified ?? 0} modified, ${counts.deleted ?? 0} deleted`,
-  }, query, ["rsp git diff --query <path>", "rsp git log --query <subject>"]);
+  }, query, ["rsp git diff --query <path>", "rsp git log --query <subject>"]));
+}
+
+function statusRecords(stdout: string): string[] {
+  if (stdout.includes("\0")) return stdout.split("\0").filter(Boolean);
+  return stdout.split(/\r?\n/).filter(Boolean);
+}
+
+function parsePorcelainV2StatusRecord(raw: string, next: string | undefined): { row: JsonObject; consumedNext: boolean } | null {
+  if (raw.startsWith("1 ")) {
+    const parts = raw.split(" ");
+    const xy = parts[1] ?? "..";
+    const path = parts.slice(8).join(" ");
+    if (!path) return null;
+    return {
+      consumedNext: false,
+      row: {
+        path,
+        index: statusSlot(xy[0]),
+        worktree: statusSlot(xy[1]),
+        state: statusState(xy),
+      },
+    };
+  }
+  if (raw.startsWith("2 ")) {
+    const parts = raw.split(" ");
+    const xy = parts[1] ?? "..";
+    const path = parts.slice(9).join(" ");
+    if (!path) return null;
+    const consumedNext = Boolean(next && !looksLikeStatusRecord(next));
+    const row: JsonObject = {
+      path,
+      index: statusSlot(xy[0]),
+      worktree: statusSlot(xy[1]),
+      state: statusState(xy),
+    };
+    if (consumedNext) row.previous_path = decodeGitPath(next ?? "");
+    return { consumedNext, row };
+  }
+  return null;
+}
+
+function parseShortStatusRecord(raw: string, next: string | undefined, nulDelimited: boolean): { row: JsonObject; consumedNext: boolean } | null {
+  if (raw.length < 4 || raw[2] !== " ") return null;
+  const xy = raw.slice(0, 2);
+  if (!isShortStatusCode(xy)) return null;
+  const renameLike = xy.includes("R") || xy.includes("C");
+  const parsedPath = parseShortPath(raw.slice(3), renameLike);
+  const consumedNext = Boolean(renameLike && nulDelimited && next && !looksLikeStatusRecord(next) && !parsedPath.previousPath);
+  const row: JsonObject = {
+    path: parsedPath.path,
+    index: statusSlot(xy[0]),
+    worktree: statusSlot(xy[1]),
+    state: statusState(xy),
+  };
+  if (parsedPath.previousPath) row.previous_path = parsedPath.previousPath;
+  if (consumedNext) row.previous_path = decodeGitPath(next ?? "");
+  return { consumedNext, row };
+}
+
+function isShortStatusCode(xy: string): boolean {
+  return /^[ MADRCU?!][ MADRCU?!]$/.test(xy);
+}
+
+function looksLikeStatusRecord(record: string): boolean {
+  return record.startsWith("# branch.") ||
+    record.startsWith("1 ") ||
+    record.startsWith("2 ") ||
+    (record.length >= 4 && record[2] === " " && isShortStatusCode(record.slice(0, 2)));
+}
+
+function parseShortPath(rawPath: string, renameLike: boolean): { path: string; previousPath?: string } {
+  if (!renameLike) return { path: decodeGitPath(rawPath) };
+  const arrow = rawPath.lastIndexOf(" -> ");
+  if (arrow === -1) return { path: decodeGitPath(rawPath) };
+  return {
+    previousPath: decodeGitPath(rawPath.slice(0, arrow)),
+    path: decodeGitPath(rawPath.slice(arrow + " -> ".length)),
+  };
+}
+
+function parseShortBranch(raw: string): string {
+  const branch = raw.split("...")[0]?.replace(/^No commits yet on /, "").trim();
+  return branch ?? "";
+}
+
+function decodeGitPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed.startsWith("\"") || !trimmed.endsWith("\"")) return trimmed;
+  try {
+    return JSON.parse(trimmed) as string;
+  } catch {
+    return trimmed.slice(1, -1).replace(/\\(["\\])/g, "$1");
+  }
+}
+
+function statusSlot(value: string | undefined): string {
+  return !value || value === " " ? "." : value;
 }
 
 export function cleanStatusPayload(command = "git status", branch = ""): JsonObject {
