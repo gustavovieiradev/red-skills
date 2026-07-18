@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { decode } from "@reddb-io/toon";
+import { decode, encode } from "@reddb-io/toon";
 import { createCastleLaneWriters, createEnginePaths } from "@reddb-io/red-castle/engine";
 
 const killTreeMocks = vi.hoisted(() => ({
@@ -186,6 +186,49 @@ describe("fleet command stale supervisor state", () => {
       expect(existsSync(paths.state)).toBe(true);
       expect(existsSync(paths.log)).toBe(true);
       expect(existsSync(paths.firehose)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stopFleet resolves a live supervisor from the castle lane when afk-supervisor.pid is missing", async () => {
+    const root = scratch();
+    try {
+      const paths = afkPaths(root);
+      const stateAfk = dirname(paths.supervisorPidPath);
+      mkdirSync(stateAfk, { recursive: true });
+      writeFileSync(
+        paths.fleetStatePath,
+        JSON.stringify({
+          epoch: Math.floor(Date.now() / 1000),
+          runner: "codex",
+          slots: { busy: 1, free: 0, total: 1, parked: 0 },
+          ready_for_agent: 1,
+          spawns_this_tick: 0,
+        }),
+        "utf8",
+      );
+      const supervisorId = "s12345";
+      const supervisorDir = join(root, ".red", "state", "castle", "supervisors", supervisorId);
+      mkdirSync(supervisorDir, { recursive: true });
+      writeFileSync(
+        join(supervisorDir, "state.toon"),
+        encode({
+          kind: "supervisor",
+          id: supervisorId,
+          version: 1,
+          updated_at: new Date().toISOString(),
+          pid: 12345,
+        }),
+        "utf8",
+      );
+      let probes = 0;
+      vi.mocked(isLivePid).mockImplementation((pid: number) => pid === 12345 && probes++ === 0);
+
+      const result = await stopFleet(root, stream());
+
+      expect(result).toEqual({ status: "stopped", pid: 12345 });
+      expect(existsSync(paths.supervisorStopPath)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
