@@ -1,0 +1,287 @@
+import { computeHalfOpenBackoff } from "../slot-circuit.js";
+import { recordDeath, type SupervisorConfig } from "./config.js";
+import { sweepParkedSlot } from "./reap.js";
+import type { ReconcileCandidate, SlotState, SpawnPolicy, SupervisorDeps, SupervisorState, TrunkFreshnessOutcome } from "./types.js";
+
+/**
+ * handle_dead_slot (supervisor.sh ~994): a slot whose worker exited. Record the
+ * death against the circuit breaker; on a trip park the slot and run the trip
+ * sweep, otherwise respawn. Returns whether the slot parked. Compose recordDeath
+ * (pure) then apply the spawn / sweep side effects.
+ *
+ * A clean exit (exit code 0, i.e. NO_MORE_TASKS / empty queue drain) is exempt
+ * from the circuit breaker: it is never a fast-death, so K consecutive drains
+ * can never trip the breaker. When the queue is empty the slot idle-parks
+ * (no sweep, no discard envelope); when the queue has work it respawns
+ * immediately. Non-zero / unknown exit codes follow the original breaker logic.
+ *
+ * The spawning flag is set around the spawnSlot await so that a tick abandoned
+ * by the guardedTick ceiling (hung gh/ps call elsewhere in the tick) does not
+ * double-spawn the slot on the next pass.
+ */
+export async function handleDeadSlot(
+  slot: number,
+  state: SlotState,
+  deps: SupervisorDeps,
+  config: SupervisorConfig,
+  queueDepth = 0,
+  spawnPolicy?: SpawnPolicy | "hard-stop",
+): Promise<{ parked: boolean }> {
+  const spawn = async (): Promise<{ pid: number; spawnEpoch: number } | null> => {
+    if (spawnPolicy === "hard-stop") return null;
+    return spawnPolicy ? deps.proc.spawnSlot(slot, spawnPolicy) : deps.proc.spawnSlot(slot);
+  };
+  // Half-open probe death: resolve the circuit transition before the normal path.
+  if (state.parked && state.halfOpen) {
+    const now = deps.now();
+    const lifetime = state.spawnEpoch > 0 ? now - state.spawnEpoch : 0;
+    const fastDeath = state.spawnEpoch > 0 && lifetime < config.fastDeathThresholdS;
+    state.halfOpen = false;
+    state.pid = null;
+    if (fastDeath) {
+      // Probe fast-died: re-park with next backoff step, sweep already ran on
+      // the original trip so we do NOT re-sweep.
+      state.backoffStep++;
+      state.tripEpoch = now;
+      deps.log?.(
+        `circuit re-parked: slot ${slot} probe fast-death (${lifetime}s), ` +
+          `next backoff=${computeHalfOpenBackoff(state.backoffStep, config)}s step=${state.backoffStep}`,
+      );
+      return { parked: true };
+    }
+    // Probe survived long enough: close the circuit and reset backoff.
+    state.parked = false;
+    state.backoffStep = 0;
+    state.tripEpoch = 0;
+    state.swept = false; // allow sweep on a future trip
+    state.deaths = []; // reset the fast-death ring
+    deps.log?.(`circuit closed: slot ${slot} probe succeeded (${lifetime}s), backoff reset`);
+    // Respawn immediately so the closed slot has a live worker.
+    state.spawning = true;
+    try {
+      const spawned = await spawn();
+      if (spawned === null) return { parked: true };
+      state.pid = spawned.pid;
+      state.spawnEpoch = spawned.spawnEpoch;
+    } finally {
+      state.spawning = false;
+    }
+    state.stalled = false;
+    state.stallSinceEpoch = 0;
+    state.reaped = false;
+    // Circuit-close spawn: on_slot_spawn fires; on_respawn does NOT (this is a
+    // circuit recovery, not a plain post-death respawn). Best-effort.
+    if (deps.dispatchFleetHook) {
+      try {
+        await deps.dispatchFleetHook("on_slot_spawn", {
+          event: "on_slot_spawn",
+          runner: config.runner,
+          slot,
+          ...(state.pid !== null ? { pid: state.pid } : {}),
+        });
+      } catch {
+        // best-effort
+      }
+    }
+    return { parked: false };
+  }
+
+  const exitCode = deps.proc.lastExitCode?.(slot) ?? null;
+  const cleanExit = exitCode === 0;
+
+  if (cleanExit) {
+    if (queueDepth === 0) {
+      // Clean drain with empty queue → idle-park (no sweep, no discard envelope).
+      state.pid = null;
+      state.idleParked = true;
+      return { parked: true };
+    }
+    // Clean drain but queue has work → respawn immediately without feeding the breaker.
+    state.spawning = true;
+    try {
+      const spawned = await spawn();
+      if (spawned === null) {
+        state.pid = null;
+        return { parked: true };
+      }
+      state.pid = spawned.pid;
+      state.spawnEpoch = spawned.spawnEpoch;
+    } finally {
+      state.spawning = false;
+    }
+    state.stalled = false;
+    state.stallSinceEpoch = 0;
+    state.reaped = false;
+    // Clean-exit respawn: on_slot_spawn + on_respawn. Best-effort.
+    if (deps.dispatchFleetHook) {
+      try {
+        await deps.dispatchFleetHook("on_slot_spawn", {
+          event: "on_slot_spawn",
+          runner: config.runner,
+          slot,
+          ...(state.pid !== null ? { pid: state.pid } : {}),
+        });
+        await deps.dispatchFleetHook("on_respawn", {
+          event: "on_respawn",
+          runner: config.runner,
+          slot,
+          ...(state.pid !== null ? { pid: state.pid } : {}),
+        });
+      } catch {
+        // best-effort
+      }
+    }
+    return { parked: false };
+  }
+
+  // Non-clean exit: record against the circuit breaker.
+  const now = deps.now();
+  const decision = recordDeath(state.deaths, state.spawnEpoch, now, config);
+  state.deaths = decision.deaths;
+
+  if (decision.trip) {
+    state.parked = true;
+    state.tripEpoch = now;
+    await sweepParkedSlot(slot, state, deps, config);
+    state.pid = null;
+    return { parked: true };
+  }
+
+  state.spawning = true;
+  try {
+    const spawned = await spawn();
+    if (spawned === null) {
+      state.pid = null;
+      return { parked: true };
+    }
+    state.pid = spawned.pid;
+    state.spawnEpoch = spawned.spawnEpoch;
+  } finally {
+    state.spawning = false;
+  }
+  // A respawn opens a fresh worker lifetime; clear any stale stall flags.
+  state.stalled = false;
+  state.stallSinceEpoch = 0;
+  state.reaped = false;
+  // Non-clean respawn: on_slot_spawn + on_respawn. Best-effort.
+  if (deps.dispatchFleetHook) {
+    try {
+      await deps.dispatchFleetHook("on_slot_spawn", {
+        event: "on_slot_spawn",
+        runner: config.runner,
+        slot,
+        ...(state.pid !== null ? { pid: state.pid } : {}),
+      });
+      await deps.dispatchFleetHook("on_respawn", {
+        event: "on_respawn",
+        runner: config.runner,
+        slot,
+        ...(state.pid !== null ? { pid: state.pid } : {}),
+      });
+    } catch {
+      // best-effort
+    }
+  }
+  return { parked: false };
+}
+
+/**
+ * dispatchReconcileIfPossible — attempt to dispatch ONE reconcile worker into
+ * the first free slot (ADR 0055, #562). Called at the end of every superviseTick,
+ * after normal lifecycle handling (respawn / stall / reap). Returns the slot
+ * index of the dispatched worker, or null when no dispatch occurred.
+ *
+ * A "free slot" is one that is not parked and has no live pid — typically freed
+ * by the stall-reaper within the same tick. The heavy validate+land runs in the
+ * worker process (its own timeout), off the tick's critical path.
+ *
+ * Both `deps.proc.spawnReconcileWorker` and `deps.gh.findReconcileCandidate` are
+ * optional — when either is absent this is a no-op, preserving backward
+ * compatibility with existing SupervisorDeps implementations (tests, boot-only).
+ */
+export async function dispatchReconcileIfPossible(
+  state: SupervisorState,
+  deps: SupervisorDeps,
+): Promise<number | null> {
+  if (!deps.proc.spawnReconcileWorker || !deps.gh.findReconcileCandidate) return null;
+
+  // Find the first free slot: not parked and no live pid.
+  const freeIdx = state.slots.findIndex((s) => !s.parked && s.pid === null);
+  if (freeIdx < 0) return null;
+
+  // Cheap detection: one gh label query + remote branch list via the injected closure.
+  let candidate: ReconcileCandidate | null = null;
+  try {
+    candidate = await deps.gh.findReconcileCandidate();
+  } catch {
+    return null;
+  }
+  if (candidate === null) return null;
+
+  // Dispatch the reconcile worker into the free slot.
+  const spawned = await deps.proc.spawnReconcileWorker(freeIdx, candidate);
+  const slot = state.slots[freeIdx]!;
+  slot.pid = spawned.pid;
+  slot.spawnEpoch = spawned.spawnEpoch;
+  // Clear stale stall/reap flags — this is a fresh worker start.
+  slot.stalled = false;
+  slot.stallSinceEpoch = 0;
+  slot.reaped = false;
+  return freeIdx;
+}
+
+/**
+ * terminate_all (supervisor.sh ~1036): kill every live slot worker on shutdown
+ * via the wait-and-escalate killTree (SIGTERM → grace → SIGKILL → confirm), so a
+ * SIGTERM-ignoring worker does not survive the supervisor's exit (#580).
+ * Best-effort.
+ */
+export async function terminateAll(state: SupervisorState, deps: SupervisorDeps): Promise<void> {
+  for (const slot of state.slots) {
+    const pid = slot.pid;
+    if (pid !== null && deps.proc.isAlive(pid)) {
+      await deps.proc.killTree(pid);
+    }
+  }
+}
+
+export async function refreshTrunkMirrorIfDue(
+  state: SupervisorState,
+  deps: SupervisorDeps,
+  config: Pick<SupervisorConfig, "trunkFreshnessIntervalS">,
+): Promise<TrunkFreshnessOutcome | undefined> {
+  if (!deps.refreshTrunkMirror) return undefined;
+
+  const now = deps.now();
+  const intervalS = Math.max(1, config.trunkFreshnessIntervalS);
+  if (state.lastTrunkFreshnessEpoch > 0 && now - state.lastTrunkFreshnessEpoch < intervalS) {
+    const throttled: TrunkFreshnessOutcome = {
+      status: "throttled",
+      refreshedAtEpoch: state.lastTrunkFreshnessEpoch,
+      nextDueEpoch: state.lastTrunkFreshnessEpoch + intervalS,
+      intervalS,
+    };
+    state.lastTrunkFreshness = throttled;
+    return throttled;
+  }
+
+  state.lastTrunkFreshnessEpoch = now;
+  let outcome: TrunkFreshnessOutcome;
+  try {
+    const refreshed = await deps.refreshTrunkMirror();
+    outcome = {
+      ...refreshed,
+      refreshedAtEpoch: now,
+      intervalS,
+    };
+  } catch (err) {
+    outcome = {
+      status: "failed",
+      refreshedAtEpoch: now,
+      intervalS,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  state.lastTrunkFreshness = outcome;
+  return outcome;
+}
