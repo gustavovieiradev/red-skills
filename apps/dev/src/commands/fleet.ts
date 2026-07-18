@@ -1,7 +1,13 @@
 import { constants } from "node:fs";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { encode as encodeToon } from "@reddb-io/toon";
+import {
+  castleLanePath,
+  createEnginePaths,
+  readCastleLaneRecords,
+  type CastleLaneRecord,
+} from "@reddb-io/red-castle/engine";
 import { afkPaths, collectMonitorInputs, readFleetState, resolveRepoSlug } from "../runtime/wire.js";
 import { migrateLegacyDevPaths } from "../runtime/red-path-migration.js";
 import { parseRunnerFlag, detectRunner } from "../core/runner-detection.js";
@@ -23,6 +29,31 @@ export interface FleetLaunchResult {
 export interface FleetStopResult {
   status: "stopped" | "none" | "stale" | "timeout";
   pid?: number;
+}
+
+export interface FleetLogsResult {
+  status: "reported";
+}
+
+export interface FleetLogsOptions {
+  followIntervalMs?: number;
+  signal?: AbortSignal;
+}
+
+type FleetLogsSource =
+  | { kind: "supervisor" }
+  | { kind: "worker"; workerId: string }
+  | { kind: "all" };
+
+interface FleetLogsRequest {
+  source: FleetLogsSource;
+  follow: boolean;
+}
+
+interface FleetLogEntry {
+  source: "supervisor" | "worker";
+  id: string;
+  record: CastleLaneRecord;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,6 +145,135 @@ function parseFleetArgs(args: readonly string[]): { stop: boolean; status: boole
     passthrough.push(arg);
   }
   return { stop, status, target: target ?? 2, request, runnerFlag, drainBudgetUsd, shrinkMode, passthrough };
+}
+
+function parseFleetLogsArgs(args: readonly string[]): FleetLogsRequest {
+  const withoutSubcommand = args[0] === "logs" ? args.slice(1) : args;
+  let source: FleetLogsSource | undefined;
+  let follow = false;
+
+  const setSource = (next: FleetLogsSource): void => {
+    if (source !== undefined) throw new Error("fleet logs accepts exactly one of --supervisor, --worker <id>, or --all");
+    source = next;
+  };
+
+  for (let i = 0; i < withoutSubcommand.length; i += 1) {
+    const arg = withoutSubcommand[i]!;
+    if (arg === "--follow" || arg === "-f") {
+      follow = true;
+      continue;
+    }
+    if (arg === "--supervisor") {
+      setSource({ kind: "supervisor" });
+      continue;
+    }
+    if (arg === "--all") {
+      setSource({ kind: "all" });
+      continue;
+    }
+    if (arg === "--worker") {
+      const workerId = withoutSubcommand[++i];
+      if (!workerId) throw new Error("--worker requires a value");
+      setSource({ kind: "worker", workerId });
+      continue;
+    }
+    if (arg.startsWith("--worker=")) {
+      const workerId = arg.slice("--worker=".length);
+      if (!workerId) throw new Error("--worker requires a value");
+      setSource({ kind: "worker", workerId });
+      continue;
+    }
+    throw new Error(`unknown fleet logs argument: ${arg}`);
+  }
+
+  if (source === undefined) throw new Error("fleet logs requires --supervisor, --worker <id>, or --all");
+  return { source, follow };
+}
+
+async function workerIds(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(afkPaths(root).workersRoot, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+}
+
+async function collectLogEntries(
+  root: string,
+  source: FleetLogsSource,
+  offsets?: Map<string, number>,
+): Promise<FleetLogEntry[]> {
+  const paths = createEnginePaths(join(root, ".red"));
+  const laneSpecs =
+    source.kind === "supervisor"
+      ? [{ source: "supervisor" as const, id: "default", path: castleLanePath(paths, "supervisor", "default") }]
+      : source.kind === "worker"
+        ? [{ source: "worker" as const, id: source.workerId, path: castleLanePath(paths, "worker", source.workerId) }]
+        : (await workerIds(root)).map((id) => ({
+            source: "worker" as const,
+            id,
+            path: castleLanePath(paths, "worker", id),
+          }));
+
+  const entries: FleetLogEntry[] = [];
+  for (const spec of laneSpecs) {
+    const records = await readCastleLaneRecords(spec.path);
+    const start = offsets?.get(spec.path) ?? 0;
+    if (offsets) offsets.set(spec.path, records.length);
+    for (const record of records.slice(start)) {
+      entries.push({ source: spec.source, id: spec.id, record });
+    }
+  }
+
+  return entries.sort((a, b) => {
+    const atCmp = Date.parse(a.record.at) - Date.parse(b.record.at);
+    if (Number.isFinite(atCmp) && atCmp !== 0) return atCmp;
+    const idCmp = a.id.localeCompare(b.id);
+    return idCmp !== 0 ? idCmp : a.record.kind.localeCompare(b.record.kind);
+  });
+}
+
+function renderPayload(payload: Record<string, unknown> | undefined): string {
+  if (!payload) return "";
+  for (const key of ["message", "line", "text"]) {
+    const value = payload[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return Object.entries(payload)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : JSON.stringify(value)}`)
+    .join(" ");
+}
+
+function renderLogEntry(entry: FleetLogEntry, prefixWorker: boolean): string {
+  const record = entry.record;
+  const issue = record.issue !== undefined ? ` #${record.issue}` : "";
+  const attempt = record.attempt !== undefined ? ` attempt=${record.attempt}` : "";
+  const payload = renderPayload(record.payload);
+  const body = `${record.at} ${record.kind}${issue}${attempt}${payload ? ` - ${payload}` : ""}`;
+  const prefix = prefixWorker && entry.source === "worker" ? `[${entry.id}] ` : "";
+  return body
+    .split(/\r?\n/)
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
+
+async function renderLogBatch(
+  root: string,
+  request: FleetLogsRequest,
+  stdout: NodeJS.WritableStream,
+  offsets?: Map<string, number>,
+): Promise<void> {
+  const entries = await collectLogEntries(root, request.source, offsets);
+  const prefixWorker = request.source.kind === "all";
+  for (const entry of entries) {
+    stdout.write(`${renderLogEntry(entry, prefixWorker)}\n`);
+  }
 }
 
 async function writeResizeRequest(
@@ -282,6 +442,26 @@ export async function statusFleet(root = process.cwd(), stdout: NodeJS.WritableS
   return { status: "reported" };
 }
 
+export async function logsFleet(
+  args: readonly string[],
+  root = process.cwd(),
+  stdout: NodeJS.WritableStream = process.stdout,
+  options: FleetLogsOptions = {},
+): Promise<FleetLogsResult> {
+  const request = parseFleetLogsArgs(args);
+  const offsets = request.follow ? new Map<string, number>() : undefined;
+  const intervalMs = Math.max(1, options.followIntervalMs ?? 1_000);
+
+  await renderLogBatch(root, request, stdout, offsets);
+  while (request.follow && !options.signal?.aborted) {
+    await sleep(intervalMs);
+    if (options.signal?.aborted) break;
+    await renderLogBatch(root, request, stdout, offsets);
+  }
+
+  return { status: "reported" };
+}
+
 export async function launchFleet(args: readonly string[], root = process.cwd(), stdout: NodeJS.WritableStream = process.stdout): Promise<FleetLaunchResult> {
   const parsed = parseFleetArgs(args);
   if (!Number.isInteger(parsed.target) || parsed.target < 0) throw new Error("fleet target must be a non-negative integer");
@@ -367,14 +547,18 @@ export async function launchFleet(args: readonly string[], root = process.cwd(),
 }
 
 export async function fleetCommand(args: string[], cwd = process.cwd()): Promise<number> {
-  const parsed = parseFleetArgs(args);
   try {
-    if (parsed.status) {
-      await statusFleet(cwd);
-    } else if (parsed.stop) {
-      await stopFleet(cwd);
+    if (args[0] === "logs") {
+      await logsFleet(args, cwd);
     } else {
-      await launchFleet(args, cwd);
+      const parsed = parseFleetArgs(args);
+      if (parsed.status) {
+        await statusFleet(cwd);
+      } else if (parsed.stop) {
+        await stopFleet(cwd);
+      } else {
+        await launchFleet(args, cwd);
+      }
     }
     return 0;
   } catch (error) {
