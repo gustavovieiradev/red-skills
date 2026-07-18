@@ -11,14 +11,6 @@
       "classification": "migrate"
     },
     {
-      "id": "apps/brain/src/scheduled-ingestion.ts:54:12#json-parse-file-read#9581dce4f6da",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/brain/src/scheduled-ingestion.ts:63:9#json-stringify-file-write#76820ec0cff4",
-      "classification": "migrate"
-    },
-    {
       "id": "apps/dev/src/commands/activity-review.ts:335:20#json-parse-file-read#1e6c06036cd8",
       "classification": "migrate"
     },
@@ -206,14 +198,6 @@
       "reason": ".mcp.json is MCP ecosystem JSON."
     },
     {
-      "id": "apps/rsp/src/elision-store.ts:1341:20#json-parse-file-read#99e6919848c4",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/rsp/src/elision-store.ts:1400:9#json-stringify-file-write#0c59c09ca48a",
-      "classification": "migrate"
-    },
-    {
       "id": "apps/rsp/src/two-axis-benchmark.ts:422:18#json-parse-file-read#cf04ec9f7556",
       "classification": "external",
       "reason": "Benchmark baseline fixture is JSON input."
@@ -222,26 +206,6 @@
       "id": "apps/rsp/src/two-axis-benchmark.ts:428:18#json-parse-file-read#2acb36d5b74d",
       "classification": "external",
       "reason": "Benchmark baseline fixture is JSON input."
-    },
-    {
-      "id": "packages/browser-bridge/session.ts:133:3#json-stringify-file-write#270772003fae",
-      "classification": "migrate"
-    },
-    {
-      "id": "packages/browser-bridge/session.ts:160:3#json-stringify-file-write#cc2a0b9cb869",
-      "classification": "migrate"
-    },
-    {
-      "id": "packages/browser-bridge/session.ts:168:3#json-stringify-file-write#ec1ecd13fd33",
-      "classification": "migrate"
-    },
-    {
-      "id": "packages/browser-bridge/session.ts:55:12#json-parse-file-read#d2f26452dc19",
-      "classification": "migrate"
-    },
-    {
-      "id": "packages/browser-bridge/session.ts:89:3#json-stringify-file-write#9da22d37f254",
-      "classification": "migrate"
     },
     {
       "id": "packages/red-castle/.red-castle/agent-workflows/shared/common.ts:44:3#json-stringify-file-write#dcc9303b3180",
@@ -271,12 +235,7 @@
       "reason": "Plugin manifest files are JSON by host contract."
     },
     {
-      "id": "packages/shared/toon-migration.ts:366:10#json-parse-file-read#15afb48d3ad6",
-      "classification": "external",
-      "reason": "TOON migration accepts legacy JSON inputs."
-    },
-    {
-      "id": "packages/shared/toon-migration.ts:469:12#json-parse-file-read#d7206ae9aa16",
+      "id": "packages/shared/toon-migration.ts:376:10#json-parse-file-read#ad1da3d3e10a",
       "classification": "external",
       "reason": "TOON migration accepts legacy JSON inputs."
     }
