@@ -19,50 +19,19 @@
       "classification": "migrate"
     },
     {
-      "id": "apps/dev/src/commands/activity-review.ts:335:20#json-parse-file-read#1e6c06036cd8",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/activity-review.ts:349:9#json-stringify-file-write#ce2f54a1ed1c",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/requeue.ts:232:5#json-stringify-file-write#73e266428283",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/run.ts:1446:25#json-parse-file-read#61d090f580f9",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/run.ts:1454:15#json-stringify-file-write#ebdfef068ac4",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/run.ts:1675:16#json-parse-file-read#b69a317dc57f",
+      "id": "apps/dev/src/commands/run.ts:1681:16#json-parse-file-read#0c859092f52e",
       "classification": "external",
       "reason": "Fetched plugin manifest remains JSON at the package boundary."
     },
     {
-      "id": "apps/dev/src/commands/run.ts:1751:13#json-stringify-file-write#27b9a7137312",
+      "id": "apps/dev/src/commands/run.ts:1757:13#json-stringify-file-write#b10fd485888a",
       "classification": "external",
       "reason": "Temporary Brain CLI handoff payload is an interop export."
     },
     {
-      "id": "apps/dev/src/commands/run.ts:1807:9#json-stringify-file-write#25fc383a7c1f",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/run.ts:1832:9#json-stringify-file-write#a8168d7dcd7c",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/commands/run.ts:1851:20#json-parse-file-read#86c344997d9c",
-      "classification": "migrate"
-    },
-    {
       "id": "apps/dev/src/core/bundle-version.ts:109:20#json-parse-file-read#2354ffad933d",
-      "classification": "migrate"
+      "classification": "external",
+      "reason": "Shared self-update status is written by the red-fetch interop contract."
     },
     {
       "id": "apps/dev/src/core/toon-json-guard.ts:112:18#json-parse-file-read#0eceada6ed44",
@@ -78,14 +47,6 @@
       "id": "apps/dev/src/runtime/review-gh.ts:93:9#json-stringify-file-write#a2a5d957db20",
       "classification": "external",
       "reason": "GitHub review API --input payload is JSON."
-    },
-    {
-      "id": "apps/dev/src/runtime/wire.ts:1010:5#json-stringify-file-write#f306ace1e8f7",
-      "classification": "migrate"
-    },
-    {
-      "id": "apps/dev/src/runtime/wire.ts:1017:7#json-stringify-file-write#53a9d6fef012",
-      "classification": "migrate"
     },
     {
       "id": "apps/memory/src/backup.ts:143:20#json-parse-file-read#dda0e20f7f1e",
