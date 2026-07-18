@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isLivePid as defaultIsLivePid } from "./kill-tree.js";
 
 export interface SupervisorStateReapResult {
@@ -18,6 +18,44 @@ export async function readSupervisorPid(pidFile: string): Promise<number | null>
   } catch {
     return null;
   }
+}
+
+function pidFromSupervisorSnapshotDir(entry: string): number | null {
+  const match = /^s([1-9][0-9]*)$/.exec(entry);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+async function readLiveSupervisorSnapshotPid(
+  supervisorsRoot: string,
+  isLivePid: (pid: number) => boolean,
+): Promise<number | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(supervisorsRoot);
+  } catch {
+    return null;
+  }
+  for (const entry of entries.sort()) {
+    const pid = pidFromSupervisorSnapshotDir(entry);
+    if (pid !== null && isLivePid(pid)) return pid;
+  }
+  return null;
+}
+
+/**
+ * Resolve the currently live fleet supervisor. The canonical pid file is the
+ * primary contract, but castle supervisor lanes are the durable fallback for
+ * #2087: a fresh heartbeat can outlive an emptied default pid anchor.
+ */
+export async function resolveLiveSupervisorPid(
+  supervisorRuntimeDir: string,
+  isLivePid: (pid: number) => boolean = defaultIsLivePid,
+): Promise<number | null> {
+  const pid = await readSupervisorPid(join(supervisorRuntimeDir, "afk-supervisor.pid"));
+  if (pid !== null && isLivePid(pid)) return pid;
+  return readLiveSupervisorSnapshotPid(dirname(supervisorRuntimeDir), isLivePid);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -67,6 +105,8 @@ export async function reapStaleSupervisorState(
     if (pid !== null) break;
   }
   if (pid !== null && isLivePid(pid)) return { status: "live", pid, removed: [] };
+  const snapshotPid = await readLiveSupervisorSnapshotPid(dirname(dirList[0] ?? ""), isLivePid);
+  if (snapshotPid !== null) return { status: "live", pid: snapshotPid, removed: [] };
 
   const artifacts = (await Promise.all(dirList.map((d) => supervisorArtifactPaths(d)))).flat();
   const present: string[] = [];
@@ -101,10 +141,8 @@ export async function reapDeadSupervisorSnapshotDirs(
 
   const removed: string[] = [];
   for (const entry of entries) {
-    const match = /^s([1-9][0-9]*)$/.exec(entry);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    if (!Number.isSafeInteger(pid) || pid === currentPid || isLivePid(pid)) continue;
+    const pid = pidFromSupervisorSnapshotDir(entry);
+    if (pid === null || pid === currentPid || isLivePid(pid)) continue;
     const dir = join(supervisorsRoot, entry);
     try {
       await rm(dir, { recursive: true, force: true });
