@@ -332,6 +332,83 @@ describe("rsp git token levers", () => {
     expect(decoded.summary).toMatch(/^1\/3 changes:/);
     expect(decoded.help).toContain("rsp git diff --query <path>");
   });
+
+  it("parses short status rows instead of fabricating a clean tree", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: [
+        "## feature/status...origin/feature/status",
+        " M src/changed.ts",
+        "?? src/new.ts",
+        "R  src/old.ts -> src/renamed.ts",
+        "",
+      ].join("\n"),
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as {
+      branch: string;
+      rows: Array<{ path: string; old_path?: string; index: string; worktree: string; state: string }>;
+      summary: string;
+    };
+
+    expect(decoded.branch).toBe("feature/status");
+    expect(decoded.rows).toEqual([
+      { path: "src/changed.ts", index: " ", worktree: "M", state: "modified" },
+      { path: "src/new.ts", index: "?", worktree: "?", state: "added" },
+      { path: "src/renamed.ts", old_path: "src/old.ts", index: "R", worktree: " ", state: "renamed" },
+    ]);
+    expect(decoded.summary).toMatch(/^3 changes:/);
+    expect(decoded.summary).not.toContain("clean");
+  });
+
+  it("parses nul-delimited -s rename rows from the git machine command", async () => {
+    const result = await renderGitContract(["git", "status", "-s"], {
+      stdout: "## feature/status\0R  src/renamed.ts\0src/old.ts\0 M src/changed.ts\0?? src/new.ts\0",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as {
+      rows: Array<{ path: string; old_path?: string; state: string }>;
+      summary: string;
+    };
+
+    expect(decoded.rows).toEqual([
+      expect.objectContaining({ path: "src/renamed.ts", old_path: "src/old.ts", state: "renamed" }),
+      expect.objectContaining({ path: "src/changed.ts", state: "modified" }),
+      expect.objectContaining({ path: "src/new.ts", state: "added" }),
+    ]);
+    expect(decoded.summary).not.toContain("clean");
+  });
+
+  it("passes through non-empty unparseable status output instead of reporting clean", async () => {
+    const stdout = "unexpected status format\n";
+    const result = await renderGitContract(["git", "status"], {
+      stdout,
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+
+    expect(result.stdout.toString("utf8")).toBe(stdout);
+    expect(result.payload).toBeUndefined();
+    expect(result.degradation).toMatchObject({ reason: "unparsed-git-status-output", family: "git status" });
+  });
+
+  it("keeps empty short status output clean", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { empty: boolean; rows: unknown[]; summary: string };
+
+    expect(decoded.empty).toBe(true);
+    expect(decoded.rows).toEqual([]);
+    expect(decoded.summary).toBe("git status clean: 0 changes");
+  });
 });
 
 function toPreviousRedundantLogStdout(stdout: string): string {
