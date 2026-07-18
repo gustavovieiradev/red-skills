@@ -46,6 +46,13 @@ export interface GitRenderResult {
   };
 }
 
+interface RawGitPassthrough {
+  passthroughStdout: string;
+  degradation: NonNullable<GitRenderResult["degradation"]>;
+}
+
+type ParsedGitPayload = JsonObject | RawGitPassthrough;
+
 export async function runGitWrapper(argv: readonly string[], options: GitRenderOptions): Promise<GitRenderResult> {
   const parsed = parseGitRenderCommand(argv);
   const subcommand = parseGitSubcommand(parsed.argv);
@@ -71,6 +78,17 @@ export async function renderGitContract(
 
   const subcommand = parseGitSubcommand(parsedCommand.argv);
   const payload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+
+  if (isRawGitPassthrough(payload)) {
+    return {
+      stdout: Buffer.from(payload.passthroughStdout),
+      stderr: Buffer.from(contract.stderr),
+      status: contract.status,
+      signal: contract.signal,
+      rawOutput: Buffer.from(payload.passthroughStdout),
+      degradation: payload.degradation,
+    };
+  }
 
   const fullToon = encode(payload);
   if (shouldEmitFull(subcommand, fullToon, parsedCommand.full, options)) {
@@ -223,7 +241,11 @@ async function collectGitContract(subcommand: GitSubcommand, rest: readonly stri
   });
 }
 
-function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): JsonObject {
+function isRawGitPassthrough(value: ParsedGitPayload): value is RawGitPassthrough {
+  return "passthroughStdout" in value;
+}
+
+function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): ParsedGitPayload {
   switch (subcommand) {
     case "status":
       return parseStatus(command, stdout, query);
@@ -244,15 +266,23 @@ function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], 
   }
 }
 
-function parseStatus(command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseStatus(command: readonly string[], stdout: string, query?: string): ParsedGitPayload {
   let branch = "";
   const rows: JsonObject[] = [];
-  for (const raw of stdout.split("\0")) {
+  const unparsedRecords: string[] = [];
+  const records = splitStatusRecords(stdout);
+  for (let i = 0; i < records.length; i++) {
+    const raw = records[i] ?? "";
     if (!raw) continue;
     if (raw.startsWith("# branch.head ")) {
       branch = raw.slice("# branch.head ".length);
       continue;
     }
+    if (raw.startsWith("## ")) {
+      branch = parseShortBranch(raw);
+      continue;
+    }
+    if (raw.startsWith("# ")) continue;
     if (!raw.startsWith("1 ")) continue;
     const parts = raw.split(" ");
     const xy = parts[1] ?? "..";
@@ -264,6 +294,22 @@ function parseStatus(command: readonly string[], stdout: string, query?: string)
       state: statusState(xy),
     });
   }
+  if (rows.length === 0) {
+    const short = parseShortStatus(stdout);
+    branch = branch || short.branch;
+    rows.push(...short.rows);
+    unparsedRecords.push(...short.unparsedRecords);
+  }
+  if (rows.length === 0 && unparsedRecords.length > 0) {
+    return {
+      passthroughStdout: stdout,
+      degradation: {
+        reason: "unparsed git status output",
+        family: "git status",
+        stderrHead: "",
+      },
+    };
+  }
   if (rows.length === 0) return cleanStatusPayload(command.join(" "), branch);
   const filteredRows = filterRows(rows, query);
   const counts = countBy(filteredRows, "state");
@@ -273,6 +319,89 @@ function parseStatus(command: readonly string[], stdout: string, query?: string)
     rows: filteredRows as JsonValue,
     summary: `${query ? `${filteredRows.length}/${rows.length}` : filteredRows.length} changes: ${counts.added ?? 0} added, ${counts.modified ?? 0} modified, ${counts.deleted ?? 0} deleted`,
   }, query, ["rsp git diff --query <path>", "rsp git log --query <subject>"]);
+}
+
+function splitStatusRecords(stdout: string): string[] {
+  if (stdout.includes("\0")) return stdout.split("\0").filter(Boolean);
+  return stdout.split(/\r?\n/).filter(Boolean);
+}
+
+function parseShortStatus(stdout: string): { branch: string; rows: JsonObject[]; unparsedRecords: string[] } {
+  let branch = "";
+  const rows: JsonObject[] = [];
+  const unparsedRecords: string[] = [];
+  const records = splitStatusRecords(stdout);
+  for (let i = 0; i < records.length; i++) {
+    const raw = records[i] ?? "";
+    if (!raw) continue;
+    if (raw.startsWith("## ")) {
+      branch = parseShortBranch(raw);
+      continue;
+    }
+    if (raw.startsWith("# ")) continue;
+    const parsed = parseShortStatusRecord(raw, stdout.includes("\0") ? records[i + 1] : undefined);
+    if (!parsed) {
+      unparsedRecords.push(raw);
+      continue;
+    }
+    rows.push(parsed.row);
+    if (parsed.consumedNext) i++;
+  }
+  return { branch, rows, unparsedRecords: rows.length === 0 ? unparsedRecords : [] };
+}
+
+function parseShortBranch(raw: string): string {
+  const branch = raw.slice("## ".length);
+  const ahead = branch.indexOf("...");
+  return ahead >= 0 ? branch.slice(0, ahead) : branch;
+}
+
+function parseShortStatusRecord(raw: string, nextRecord?: string): { row: JsonObject; consumedNext: boolean } | null {
+  if (raw.length < 4 || raw[2] !== " ") return null;
+  const xy = raw.slice(0, 2);
+  if (!isShortStatusXy(xy)) return null;
+  const payload = raw.slice(3);
+  const state = statusState(xy);
+  const path = parseShortStatusPath(payload, state, nextRecord);
+  return {
+    row: {
+      path,
+      index: normalizeShortStatusSlot(xy[0] ?? " "),
+      worktree: normalizeShortStatusSlot(xy[1] ?? " "),
+      state,
+    },
+    consumedNext: Boolean(nextRecord && state === "renamed" && !payload.includes(" -> ")),
+  };
+}
+
+function isShortStatusXy(xy: string): boolean {
+  return /^[ MADRCU?!]{2}$/.test(xy);
+}
+
+function normalizeShortStatusSlot(value: string): string {
+  return value === " " ? "." : value;
+}
+
+function parseShortStatusPath(payload: string, state: string, nextRecord?: string): string {
+  if (state === "renamed") {
+    if (nextRecord) return unquoteGitPath(payload);
+    const arrow = payload.lastIndexOf(" -> ");
+    if (arrow >= 0) return unquoteGitPath(payload.slice(arrow + " -> ".length));
+  }
+  return unquoteGitPath(payload);
+}
+
+function unquoteGitPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed.startsWith("\"") || !trimmed.endsWith("\"")) return trimmed;
+  try {
+    return JSON.parse(trimmed) as string;
+  } catch {
+    return trimmed.slice(1, -1)
+      .replace(/\\([0-7]{1,3})/g, (_, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)))
+      .replace(/\\"/g, "\"")
+      .replace(/\\\\/g, "\\");
+  }
 }
 
 export function cleanStatusPayload(command = "git status", branch = ""): JsonObject {
@@ -517,6 +646,7 @@ function helpIfQueried(payload: JsonObject, query: string | undefined, help: rea
 
 
 function statusState(xy: string): string {
+  if (xy.includes("?")) return "added";
   if (xy.includes("A")) return "added";
   if (xy.includes("D")) return "deleted";
   if (xy.includes("R")) return "renamed";
