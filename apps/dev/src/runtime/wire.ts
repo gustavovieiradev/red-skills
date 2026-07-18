@@ -12,6 +12,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { copyFileSync, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { readBuildInfo } from "@reddb-io/build-info";
 import { hostFingerprintPrefix } from "../core/host-identity.js";
@@ -1278,6 +1279,68 @@ function readSupervisorPid(path: string): number | null {
   }
 }
 
+function parseSupervisorPid(raw: unknown): number | null {
+  const pid = typeof raw === "number" ? raw : Number(raw);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+async function collectCastleSupervisorPidCandidates(root: string): Promise<number[]> {
+  const roots = [
+    join(root, ".red", "state", "castle", "supervisors"),
+    join(root, ".red", "tmp", "supervisors"),
+  ];
+  const candidates = new Set<number>();
+
+  for (const supervisorsRoot of roots) {
+    let entries: string[];
+    try {
+      entries = await readdir(supervisorsRoot);
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const match = /^s([1-9][0-9]*)$/.exec(entry);
+      if (match) candidates.add(Number(match[1]));
+
+      const text = await fsx.readText(join(supervisorsRoot, entry, "state.toon"));
+      if (text === null) continue;
+      try {
+        const snapshot = decodeToon(text);
+        if (snapshot !== null && typeof snapshot === "object" && !Array.isArray(snapshot)) {
+          const pid = parseSupervisorPid((snapshot as Record<string, unknown>).pid);
+          if (pid !== null) candidates.add(pid);
+        }
+      } catch {
+        // Ignore corrupt or partially-written castle snapshots; default state.toon
+        // freshness is the liveness proof for this fallback path.
+      }
+    }
+  }
+
+  return [...candidates];
+}
+
+export async function resolveLiveFleetSupervisorPid(
+  root: string,
+  options: {
+    allowCastleSnapshotFallback?: boolean;
+    livePid?: (pid: number) => boolean;
+  } = {},
+): Promise<number | null> {
+  const livePid = options.livePid ?? isLivePid;
+  const paths = afkPaths(root);
+  const pid = readSupervisorPid(paths.supervisorPidPath);
+  if (pid !== null && livePid(pid)) return pid;
+
+  if (options.allowCastleSnapshotFallback !== true) return null;
+
+  for (const candidate of await collectCastleSupervisorPidCandidates(root)) {
+    if (livePid(candidate)) return candidate;
+  }
+  return null;
+}
+
 /**
  * Repo-summary fleet segment input. It is intentionally independent of live
  * worker rows: the supervisor can be landing, validating, merging, or idle
@@ -1289,12 +1352,11 @@ export async function collectStatuslineFleet(
   nowS: number = Math.floor(Date.now() / 1000),
 ): Promise<FleetInput | undefined> {
   const paths = afkPaths(ctx.root);
-  const pid = readSupervisorPid(paths.supervisorPidPath);
-  if (pid === null || !isLivePid(pid)) return undefined;
-
   const state = await readFleetState(paths.fleetStatePath);
   if (!state) return undefined;
   if (nowS - state.epoch > maxAgeS) return undefined;
+  const pid = await resolveLiveFleetSupervisorPid(ctx.root, { allowCastleSnapshotFallback: true });
+  if (pid === null) return undefined;
   const workers = currentRenderableWorkerRecords(
     await readAllWorkerStates(paths.tmpDir, { nowMs: nowS * 1000 }),
   );
