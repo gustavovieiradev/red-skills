@@ -71,6 +71,16 @@ export async function renderGitContract(
 
   const subcommand = parseGitSubcommand(parsedCommand.argv);
   const payload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+  if (isGitPassthroughPayload(payload)) {
+    return {
+      stdout: Buffer.from(payload.stdout),
+      stderr: Buffer.from(contract.stderr),
+      status: contract.status,
+      signal: contract.signal,
+      rawOutput: Buffer.from(payload.stdout),
+      degradation: payload.degradation,
+    };
+  }
 
   const fullToon = encode(payload);
   if (shouldEmitFull(subcommand, fullToon, parsedCommand.full, options)) {
@@ -123,6 +133,12 @@ interface ParsedGitRenderCommand {
   argv: string[];
   query?: string;
   full: boolean;
+}
+
+interface GitPassthroughPayload {
+  passthrough: true;
+  stdout: string;
+  degradation: NonNullable<GitRenderResult["degradation"]>;
 }
 
 function parseGitRenderCommand(command: readonly string[]): ParsedGitRenderCommand {
@@ -223,7 +239,7 @@ async function collectGitContract(subcommand: GitSubcommand, rest: readonly stri
   });
 }
 
-function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): JsonObject | GitPassthroughPayload {
   switch (subcommand) {
     case "status":
       return parseStatus(command, stdout, query);
@@ -244,25 +260,47 @@ function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], 
   }
 }
 
-function parseStatus(command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseStatus(command: readonly string[], stdout: string, query?: string): JsonObject | GitPassthroughPayload {
   let branch = "";
   const rows: JsonObject[] = [];
-  for (const raw of stdout.split("\0")) {
+  const unknownRecords: string[] = [];
+  const records = statusRecords(stdout);
+  for (let i = 0; i < records.length; i++) {
+    const raw = records[i]!;
     if (!raw) continue;
     if (raw.startsWith("# branch.head ")) {
       branch = raw.slice("# branch.head ".length);
       continue;
     }
-    if (!raw.startsWith("1 ")) continue;
-    const parts = raw.split(" ");
-    const xy = parts[1] ?? "..";
-    const path = parts.slice(8).join(" ");
-    rows.push({
-      path,
-      index: xy[0] ?? ".",
-      worktree: xy[1] ?? ".",
-      state: statusState(xy),
-    });
+    if (raw.startsWith("# branch.")) continue;
+    if (raw.startsWith("## ")) {
+      branch = raw.slice("## ".length);
+      continue;
+    }
+    const v2Row = parsePorcelainV2StatusRecord(raw);
+    if (v2Row) {
+      rows.push(v2Row);
+      if (v2Row.state === "renamed" && stdout.includes("\0") && records[i + 1] && !isStatusRecord(records[i + 1]!)) i++;
+      continue;
+    }
+    const shortRow = parseShortStatusRecord(raw);
+    if (shortRow) {
+      rows.push(shortRow);
+      if (shortRow.state === "renamed" && stdout.includes("\0") && records[i + 1] && !isStatusRecord(records[i + 1]!)) i++;
+      continue;
+    }
+    unknownRecords.push(raw);
+  }
+  if (unknownRecords.length > 0) {
+    return {
+      passthrough: true,
+      stdout,
+      degradation: {
+        reason: "git-status-unparsed",
+        family: "git:status",
+        stderrHead: unknownRecords[0]?.slice(0, 200) ?? "",
+      },
+    };
   }
   if (rows.length === 0) return cleanStatusPayload(command.join(" "), branch);
   const filteredRows = filterRows(rows, query);
@@ -287,6 +325,135 @@ export function cleanStatusPayload(command = "git status", branch = ""): JsonObj
     rows: [],
     summary: "git status clean: 0 changes",
   };
+}
+
+function isGitPassthroughPayload(payload: JsonObject | GitPassthroughPayload): payload is GitPassthroughPayload {
+  return "passthrough" in payload && payload.passthrough === true;
+}
+
+function statusRecords(stdout: string): string[] {
+  if (stdout.includes("\0")) return stdout.split("\0").filter((record) => record.length > 0);
+  return stdout.split(/\r?\n/).filter((record) => record.length > 0);
+}
+
+function parsePorcelainV2StatusRecord(raw: string): JsonObject | null {
+  if (raw.startsWith("1 ")) {
+    const parts = raw.split(" ");
+    const xy = normalizeStatusXy(parts[1] ?? "..");
+    return statusRow(parts.slice(8).join(" "), xy);
+  }
+  if (raw.startsWith("2 ")) {
+    const parts = raw.split(" ");
+    const xy = normalizeStatusXy(parts[1] ?? "..");
+    return statusRow(parts.slice(9).join(" "), xy);
+  }
+  if (raw.startsWith("? ")) return statusRow(raw.slice(2), "??");
+  if (raw.startsWith("! ")) return statusRow(raw.slice(2), "!!");
+  return null;
+}
+
+function parseShortStatusRecord(raw: string): JsonObject | null {
+  if (raw.length < 4 || raw[2] !== " ") return null;
+  const xy = normalizeStatusXy(raw.slice(0, 2));
+  if (!isShortStatusXy(xy)) return null;
+  const rawPath = raw.slice(3);
+  const path = xy.includes("R") || xy.includes("C")
+    ? parseRenameDestination(rawPath)
+    : parseStatusPath(rawPath);
+  return statusRow(path, xy);
+}
+
+function statusRow(path: string, xy: string): JsonObject {
+  return {
+    path: parseStatusPath(path),
+    index: xy[0] ?? ".",
+    worktree: xy[1] ?? ".",
+    state: statusState(xy),
+  };
+}
+
+function normalizeStatusXy(xy: string): string {
+  return xy.replaceAll(" ", ".");
+}
+
+function isShortStatusXy(xy: string): boolean {
+  return /^[.MADRCU?!][.MADRCU?!]$/.test(xy);
+}
+
+function isStatusRecord(raw: string): boolean {
+  return raw.startsWith("# branch.head ") ||
+    raw.startsWith("## ") ||
+    raw.startsWith("1 ") ||
+    raw.startsWith("2 ") ||
+    raw.startsWith("? ") ||
+    raw.startsWith("! ") ||
+    parseShortStatusRecord(raw) !== null;
+}
+
+function parseRenameDestination(path: string): string {
+  const arrow = path.lastIndexOf(" -> ");
+  if (arrow === -1) return parseStatusPath(path);
+  return parseStatusPath(path.slice(arrow + " -> ".length));
+}
+
+function parseStatusPath(path: string): string {
+  if (!path.startsWith("\"")) return path;
+  try {
+    return parseQuotedStatusPath(path);
+  } catch {
+    return path;
+  }
+}
+
+function parseQuotedStatusPath(path: string): string {
+  let out = "";
+  for (let i = 1; i < path.length; i++) {
+    const char = path[i]!;
+    if (char === "\"" && i === path.length - 1) return out;
+    if (char !== "\\") {
+      out += char;
+      continue;
+    }
+    const next = path[++i];
+    if (next === undefined) break;
+    switch (next) {
+      case "a":
+        out += "\x07";
+        break;
+      case "b":
+        out += "\b";
+        break;
+      case "f":
+        out += "\f";
+        break;
+      case "n":
+        out += "\n";
+        break;
+      case "r":
+        out += "\r";
+        break;
+      case "t":
+        out += "\t";
+        break;
+      case "v":
+        out += "\v";
+        break;
+      case "\\":
+      case "\"":
+        out += next;
+        break;
+      default: {
+        if (/[0-7]/.test(next)) {
+          let octal = next;
+          for (let count = 0; count < 2 && /[0-7]/.test(path[i + 1] ?? ""); count++) octal += path[++i]!;
+          out += String.fromCharCode(Number.parseInt(octal, 8));
+        } else {
+          out += next;
+        }
+      }
+    }
+  }
+  throw new Error("unterminated quoted status path");
 }
 
 function parseLog(command: readonly string[], stdout: string, query?: string): JsonObject {
@@ -517,6 +684,8 @@ function helpIfQueried(payload: JsonObject, query: string | undefined, help: rea
 
 
 function statusState(xy: string): string {
+  if (xy.includes("!")) return "ignored";
+  if (xy.includes("?")) return "added";
   if (xy.includes("A")) return "added";
   if (xy.includes("D")) return "deleted";
   if (xy.includes("R")) return "renamed";
