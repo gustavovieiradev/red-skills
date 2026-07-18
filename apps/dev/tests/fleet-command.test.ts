@@ -149,6 +149,24 @@ describe("fleet command stale supervisor state", () => {
     }
   });
 
+  it("stopFleet targets a live structured supervisor lane when the default pid file is missing", async () => {
+    const root = scratch();
+    try {
+      const stateAfk = dirname(afkPaths(root).supervisorPidPath);
+      mkdirSync(stateAfk, { recursive: true });
+      mkdirSync(join(stateAfk, "..", "s12345"), { recursive: true });
+      writeFileSync(afkPaths(root).fleetStatePath, "fresh state\n", "utf8");
+      vi.mocked(isLivePid).mockReturnValueOnce(true).mockReturnValueOnce(false);
+
+      const result = await stopFleet(root, stream());
+
+      expect(result).toMatchObject({ status: "stopped", pid: 12345 });
+      expect(existsSync(afkPaths(root).fleetStatePath)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("statusFleet reports supervisor + slots ground truth read-only, no supervisor → absent (#2060)", async () => {
     const root = scratch();
     try {
