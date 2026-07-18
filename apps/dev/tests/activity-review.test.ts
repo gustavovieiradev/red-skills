@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -250,6 +250,10 @@ describe("activity review", () => {
 
     const first = await collectTokenSummary(root, start, end);
     expect(first).toEqual({ available: true, input: 7, output: 11, total: null, sourceRecords: 1 });
+    const cachePath = join(root, ".activity-review-token-cursors.toon");
+    const cacheRaw = await readFile(cachePath, "utf8");
+    expect(() => JSON.parse(cacheRaw)).toThrow();
+    expect(decode(cacheRaw)).toHaveProperty(log);
 
     await appendRecordToonlTaggedRow(log, "raw", { iteration: 2, line: "{\"inputTokens\":13,\"outputTokens\":17}" }, {
       ts: "2026-07-15T12:05:00.000Z",
@@ -258,8 +262,17 @@ describe("activity review", () => {
     const resumed = await collectTokenSummary(root, start, end);
     expect(resumed).toEqual({ available: true, input: 20, output: 28, total: null, sourceRecords: 2 });
 
-    await writeFile(join(root, ".activity-review-token-cursors.json"), "", "utf8");
+    await writeFile(cachePath, "", "utf8");
     const cold = await collectTokenSummary(root, start, end);
     expect(cold).toEqual(resumed);
+
+    await rm(cachePath);
+    await writeFile(join(root, ".activity-review-token-cursors.json"), JSON.stringify(decode(cacheRaw)), "utf8");
+    await appendRecordToonlTaggedRow(log, "raw", { iteration: 3, line: "{\"inputTokens\":2,\"outputTokens\":4}" }, {
+      ts: "2026-07-15T12:10:00.000Z",
+      fields: { extra: { iteration: "3" } },
+    });
+    const legacyResumed = await collectTokenSummary(root, start, end);
+    expect(legacyResumed).toEqual({ available: true, input: 22, output: 32, total: null, sourceRecords: 3 });
   });
 });
