@@ -2192,4 +2192,52 @@ describe("runAgent — forwards onHeartbeat to the guard tick", () => {
     const res = await p;
     expect(res.outcome).toBe("done");
   });
+
+  it("nudges codex heartbeats from live stream events during a single long iteration", async () => {
+    let clock = 0;
+    const sched = manualScheduler();
+    const ticks: AttemptProgressInfo[] = [];
+    const events: AgentStreamEvent[] = [];
+    let stream: ((event: AgentStreamEvent) => void) | undefined;
+    let resolveRun: ((r: RunResult) => void) | undefined;
+    const deps: SandcastleDeps = {
+      ...makeDeps((o) => {
+        stream = o.logging?.type === "file" ? o.logging.onAgentStreamEvent : undefined;
+        return new Promise<RunResult>((res) => (resolveRun = res));
+      }),
+      now: () => clock,
+      schedule: sched.schedule,
+      makeAbortController: () => new AbortController(),
+    };
+    const p = runAgent(deps, {
+      ...baseInput,
+      runner: "codex",
+      model: "gpt-5.4",
+      logPath: "/tmp/afk.log",
+      attemptTimeoutSeconds: 600,
+      headProbe: async () => "static",
+      onAgentEvent: (event) => events.push(event),
+      onHeartbeat: (i) => ticks.push(i),
+    });
+
+    stream?.({ type: "toolCall", name: "apply_patch", formattedArgs: "{}", iteration: 1, timestamp: new Date(0) });
+    await flush();
+    expect(events).toHaveLength(1);
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0]?.head).toBe("static");
+
+    clock = 1_000;
+    stream?.({ type: "text", message: "still working", iteration: 1, timestamp: new Date(1_000) });
+    await flush();
+    expect(ticks).toHaveLength(1);
+
+    clock = 60_000;
+    stream?.({ type: "text", message: "still working", iteration: 1, timestamp: new Date(60_000) });
+    await flush();
+    expect(ticks).toHaveLength(2);
+
+    resolveRun?.(fakeResult({ completionSignal: DONE_SIGNAL }));
+    const res = await p;
+    expect(res.outcome).toBe("done");
+  });
 });
