@@ -9,6 +9,11 @@ export interface SupervisorStateReapResult {
   removed: string[];
 }
 
+export interface SupervisorPidDiscovery {
+  pid: number;
+  source: "pid-file" | "snapshot-dir";
+}
+
 export async function readSupervisorPid(pidFile: string): Promise<number | null> {
   try {
     const raw = (await readFile(pidFile, "utf8")).trim();
@@ -18,6 +23,34 @@ export async function readSupervisorPid(pidFile: string): Promise<number | null>
   } catch {
     return null;
   }
+}
+
+export async function discoverLiveSupervisorPid(
+  pidFile: string,
+  supervisorsRoot: string,
+  isLivePid: (pid: number) => boolean = defaultIsLivePid,
+): Promise<SupervisorPidDiscovery | null> {
+  const pid = await readSupervisorPid(pidFile);
+  if (pid !== null && isLivePid(pid)) return { pid, source: "pid-file" };
+
+  let entries: string[];
+  try {
+    entries = await readdir(supervisorsRoot);
+  } catch {
+    return null;
+  }
+
+  const candidates = entries
+    .map((entry) => /^s([1-9][0-9]*)$/.exec(entry)?.[1])
+    .filter((raw): raw is string => raw !== undefined)
+    .map((raw) => Number(raw))
+    .filter((candidate) => Number.isSafeInteger(candidate) && candidate > 0)
+    .sort((a, b) => b - a);
+
+  for (const candidate of candidates) {
+    if (isLivePid(candidate)) return { pid: candidate, source: "snapshot-dir" };
+  }
+  return null;
 }
 
 async function exists(path: string): Promise<boolean> {
