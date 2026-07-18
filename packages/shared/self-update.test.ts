@@ -19,6 +19,7 @@ import {
   type SelfUpdateIO,
   selectInRangeUpdate,
 } from "./self-update.js";
+import { decodeSnapshotDocument } from "./toon-migration.js";
 
 const PLUGIN = "dev";
 const REPO = "reddb-io/red-skills";
@@ -348,6 +349,9 @@ describe("backgroundSelfUpdate (registry discovery + npm materialize)", () => {
     expect(res).toEqual({ status: "up-to-date", version: INSTALLED });
     expect(materializes).toEqual([]);
     expect(writes).toEqual([statusPath(CACHE, PLUGIN)]);
+    const statusRaw = new TextDecoder().decode(files[statusPath(CACHE, PLUGIN)]);
+    expect(statusRaw.trim()).not.toMatch(/^\{/);
+    expect(decodeSnapshotDocument(statusRaw)).toMatchObject({ lastStatus: "up-to-date" });
     expect(renames).toEqual([]);
     expect(files[pointerPath(CACHE, PLUGIN)]).toBeUndefined();
   });
