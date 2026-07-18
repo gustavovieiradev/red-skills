@@ -83,6 +83,52 @@ describe("rsp git fidelity fixtures", () => {
     }
   });
 
+  it("parses short git status rows instead of reporting dirty output as clean", async () => {
+    const recorded = {
+      stdout: "## feature/rsp\n M modified.ts\n?? new-file.ts\nR  old-name.ts -> new-name.ts\n",
+      stderr: "",
+      status: 0,
+      signal: null,
+    };
+    const result = await renderGitContract(["git", "status", "--short"], recorded, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as {
+      branch: string;
+      rows: Array<{ path: string; previous_path?: string; index: string; worktree: string; state: string }>;
+      summary: string;
+    };
+
+    expect(decoded.branch).toBe("feature/rsp");
+    expect(decoded.rows).toEqual([
+      { path: "modified.ts", index: ".", worktree: "M", state: "modified" },
+      { path: "new-file.ts", index: "?", worktree: "?", state: "changed" },
+      { path: "new-name.ts", previous_path: "old-name.ts", index: "R", worktree: ".", state: "renamed" },
+    ]);
+    expect(decoded.summary).toBe("3 changes: 0 added, 1 modified, 0 deleted");
+    expect(decoded.summary).not.toContain("clean");
+
+    const shortAlias = await renderGitContract(["git", "status", "-s"], recorded, { level: "lossless" });
+    expect(decode(shortAlias.stdout.toString("utf8"))).toMatchObject({ rows: decoded.rows });
+  });
+
+  it("fails open for non-empty status stdout it cannot classify", async () => {
+    const recorded = { stdout: "unexpected status shape\n", stderr: "", status: 0, signal: null };
+    const result = await renderGitContract(["git", "status", "--short"], recorded, { level: "lossless" });
+
+    expect(result.stdout.toString("utf8")).toBe(recorded.stdout);
+    expect(result.payload).toBeUndefined();
+    expect(result.degradation).toMatchObject({ reason: "git-status-unparsed-output", family: "git:status" });
+    expect(result.stdout.toString("utf8")).not.toContain("git status clean: 0 changes");
+  });
+
+  it("still reports clean when status stdout is empty", async () => {
+    const recorded = { stdout: "", stderr: "", status: 0, signal: null };
+    const result = await renderGitContract(["git", "status", "--short"], recorded, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { rows: unknown[]; summary: string };
+
+    expect(decoded.rows).toEqual([]);
+    expect(decoded.summary).toBe("git status clean: 0 changes");
+  });
+
   it("mints a terse elision handle with the exact marker line and show can retrieve the original", async () => {
     const root = await tempRoot();
     const store = await RspElisionStore.open({ uri: `file://${join(root, "red.rdb")}` });
