@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, readdir, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isLivePid as defaultIsLivePid } from "./kill-tree.js";
 
 export interface SupervisorStateReapResult {
@@ -18,6 +18,39 @@ export async function readSupervisorPid(pidFile: string): Promise<number | null>
   } catch {
     return null;
   }
+}
+
+async function readLiveSnapshotSupervisorPid(
+  supervisorsRoot: string,
+  isLivePid: (pid: number) => boolean,
+): Promise<number | null> {
+  let entries: string[];
+  try {
+    entries = await readdir(supervisorsRoot);
+  } catch {
+    return null;
+  }
+
+  const pids = entries
+    .map((entry) => /^s([1-9][0-9]*)$/.exec(entry))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number(match[1]))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0)
+    .sort((a, b) => b - a);
+
+  for (const pid of pids) {
+    if (isLivePid(pid)) return pid;
+  }
+  return null;
+}
+
+export async function resolveLiveSupervisorPid(
+  pidFile: string,
+  isLivePid: (pid: number) => boolean = defaultIsLivePid,
+): Promise<number | null> {
+  const pid = await readSupervisorPid(pidFile);
+  if (pid !== null && isLivePid(pid)) return pid;
+  return readLiveSnapshotSupervisorPid(dirname(dirname(pidFile)), isLivePid);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -63,10 +96,12 @@ export async function reapStaleSupervisorState(
   const dirList = typeof dirs === "string" ? [dirs] : [...dirs];
   let pid: number | null = null;
   for (const dir of dirList) {
-    pid = await readSupervisorPid(join(dir, "afk-supervisor.pid"));
+    const pidFile = join(dir, "afk-supervisor.pid");
+    pid = await resolveLiveSupervisorPid(pidFile, isLivePid);
+    if (pid !== null) return { status: "live", pid, removed: [] };
+    pid = await readSupervisorPid(pidFile);
     if (pid !== null) break;
   }
-  if (pid !== null && isLivePid(pid)) return { status: "live", pid, removed: [] };
 
   const artifacts = (await Promise.all(dirList.map((d) => supervisorArtifactPaths(d)))).flat();
   const present: string[] = [];
