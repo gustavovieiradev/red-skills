@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { encode as encodeToon } from "@reddb-io/toon";
 import {
@@ -32,15 +31,6 @@ export interface FleetStopResult {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function parsePositiveNumber(raw: string | undefined, flag: string): number {
   if (raw === undefined) throw new Error(`${flag} requires a value`);
@@ -184,10 +174,11 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
     stdout.write("no fleet running (reason=no supervisor pid).\n");
     return { status: "none" };
   }
+  await mkdir(dirname(pidFile), { recursive: true });
   await writeFile(stopFile, "", "utf8");
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (!(await fileExists(pidFile)) || !isLivePid(pid)) {
+    if (!isLivePid(pid)) {
       // The supervisor's own terminateAll should have killed its slots on clean
       // exit, but sweep detached survivors anyway — a slot the loop lost track of
       // (moved-pid, mid-spawn) would otherwise outlive the "stopped" report.
