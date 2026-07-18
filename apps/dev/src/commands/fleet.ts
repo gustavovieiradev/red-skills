@@ -184,10 +184,11 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
     stdout.write("no fleet running (reason=no supervisor pid).\n");
     return { status: "none" };
   }
+  const pidFileWasPresent = await fileExists(pidFile);
   await writeFile(stopFile, "", "utf8");
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (!(await fileExists(pidFile)) || !isLivePid(pid)) {
+    if (!isLivePid(pid) || (pidFileWasPresent && !(await fileExists(pidFile)))) {
       // The supervisor's own terminateAll should have killed its slots on clean
       // exit, but sweep detached survivors anyway — a slot the loop lost track of
       // (moved-pid, mid-spawn) would otherwise outlive the "stopped" report.
