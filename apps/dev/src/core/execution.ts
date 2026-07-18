@@ -1080,7 +1080,13 @@ export function startAttemptGuard(opts: {
    * heartbeat + on_heartbeat hook ride this same cadence (PR-B). Never throws —
    * the caller wraps its own IO. */
   onTick?: (info: AttemptProgressInfo) => void;
-}): { stop: () => void; firedTimeout: () => boolean; firedGoalMoot: () => boolean; firedBudget: () => boolean } {
+}): {
+  stop: () => void;
+  poke: () => void;
+  firedTimeout: () => boolean;
+  firedGoalMoot: () => boolean;
+  firedBudget: () => boolean;
+} {
   let lastProgress = opts.now();
   let lastCommit = opts.now();
   let lastHead: string | undefined;
@@ -1091,7 +1097,12 @@ export function startAttemptGuard(opts: {
   let fired = false;
   let goalMoot = false;
   let budgetFired = false;
-  const cancel = opts.schedule(() => {
+  let pollInFlight = false;
+  let lastPollStarted = opts.now();
+  const poll = (): void => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    lastPollStarted = opts.now();
     void (async () => {
       if (fired) return;
       // Goal predicate (ADR 0057): rides THIS poll — one issue-state read per
@@ -1211,10 +1222,18 @@ export function startAttemptGuard(opts: {
       }
       if (activityScore !== undefined) lastActivityScore = activityScore;
       opts.onTick?.({ head: head ?? lastHead, lastProgressMs: lastProgress, nowMs: opts.now() });
-    })();
-  }, opts.intervalMs);
+    })().finally(() => {
+      pollInFlight = false;
+    });
+  };
+  const poke = (): void => {
+    if (opts.now() - lastPollStarted < opts.intervalMs) return;
+    poll();
+  };
+  const cancel = opts.schedule(poll, opts.intervalMs);
   return {
     stop: cancel,
+    poke,
     // firedTimeout EXCLUDES the goal-moot and budget aborts — each has its own
     // dedicated terminal so they never collide on the shared `fired` flag.
     firedTimeout: () => fired && !goalMoot && !budgetFired,
@@ -1269,7 +1288,13 @@ export async function runAgent(deps: SandcastleDeps, input: RunAgentInput): Prom
   const makeController = deps.makeAbortController ?? (() => new AbortController());
   const schedule = deps.schedule ?? defaultSchedule;
   let guard:
-    | { stop: () => void; firedTimeout: () => boolean; firedGoalMoot: () => boolean; firedBudget: () => boolean }
+    | {
+        stop: () => void;
+        poke: () => void;
+        firedTimeout: () => boolean;
+        firedGoalMoot: () => boolean;
+        firedBudget: () => boolean;
+      }
     | undefined;
   let timeoutReason: AttemptTimeoutReason | undefined;
   let laneReaper: { stop: () => void; firedReap: () => boolean } | undefined;
@@ -1352,7 +1377,17 @@ export async function runAgent(deps: SandcastleDeps, input: RunAgentInput): Prom
 
   let result: RunResult;
   try {
-    const options = buildRunOptions(deps, input);
+    const options = buildRunOptions(deps, {
+      ...input,
+      ...(input.onAgentEvent
+        ? {
+            onAgentEvent: (event) => {
+              input.onAgentEvent?.(event);
+              guard?.poke();
+            },
+          }
+        : {}),
+    });
     result = await deps.run(controller ? { ...options, signal: controller.signal } : options);
   } catch (error) {
     // The lane-idle reaper aborted: agent lane silent past the kill threshold
