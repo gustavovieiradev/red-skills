@@ -58,6 +58,7 @@ import { collectTmpJanitorReport } from "./tmp-janitor.js";
 import { collectFleetTruthProbeInput } from "../core/operational-probes.js";
 import { resolveSupervisorConfig } from "../core/supervisor.js";
 import { evaluateFastForwardLocalTarget, fastForwardLocalTarget } from "../core/merge.js";
+import { resolveLiveSupervisorPid } from "./supervisor-state.js";
 
 // ---------- repo resolution ----------
 
@@ -1269,15 +1270,6 @@ export async function collectStatuslineAfk(
 
 const STATUSLINE_FLEET_MAX_AGE_S = 120;
 
-function readSupervisorPid(path: string): number | null {
-  try {
-    const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Repo-summary fleet segment input. It is intentionally independent of live
  * worker rows: the supervisor can be landing, validating, merging, or idle
@@ -1289,8 +1281,8 @@ export async function collectStatuslineFleet(
   nowS: number = Math.floor(Date.now() / 1000),
 ): Promise<FleetInput | undefined> {
   const paths = afkPaths(ctx.root);
-  const pid = readSupervisorPid(paths.supervisorPidPath);
-  if (pid === null || !isLivePid(pid)) return undefined;
+  const pid = await resolveLiveSupervisorPid(paths.supervisorPidPath, isLivePid);
+  if (pid === null) return undefined;
 
   const state = await readFleetState(paths.fleetStatePath);
   if (!state) return undefined;
