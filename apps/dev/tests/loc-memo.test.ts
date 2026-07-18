@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveAttemptLoc, locMemoPath, type LocMemo } from "../src/core/loc-memo.js";
+import {
+  decodeLocMemoSniff,
+  encodeLocMemoToon,
+  resolveAttemptLoc,
+  locMemoPath,
+  type LocMemo,
+} from "../src/core/loc-memo.js";
 
 describe("resolveAttemptLoc — commit-anchored LOC memo (#1210)", () => {
   it("computes once per commit: a memo hit on the same sha spawns no diffstat", async () => {
@@ -86,7 +92,16 @@ describe("resolveAttemptLoc — commit-anchored LOC memo (#1210)", () => {
   });
 
   it("locMemoPath sits beside the attempt state file", () => {
-    expect(locMemoPath("/tmp/attempt")).toBe("/tmp/attempt/.loc-memo.json");
+    expect(locMemoPath("/tmp/attempt")).toBe("/tmp/attempt/.loc-memo.toon");
+  });
+
+  it("round-trips LOC memo state as TOON while sniff-reading legacy JSON", () => {
+    const memo: LocMemo = { sha: "abc123", added: 12, removed: 3 };
+    const toon = encodeLocMemoToon(memo);
+
+    expect(() => JSON.parse(toon)).toThrow();
+    expect(decodeLocMemoSniff(toon)).toEqual(memo);
+    expect(decodeLocMemoSniff(JSON.stringify(memo))).toEqual(memo);
   });
 
   // #1224 Part A: a codex worker never commits, so its HEAD sha is frozen for the
