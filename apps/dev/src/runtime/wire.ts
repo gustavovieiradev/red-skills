@@ -1005,7 +1005,7 @@ function releaseStatuslineRefreshLock(lockPath: string): void {
 
 function acquireStatuslineRefreshLock(lockPath: string, nowS: number): boolean {
   mkdirSync(dirname(lockPath), { recursive: true });
-  const payload = JSON.stringify({ pid: process.pid, ts: nowS });
+  const payload = encodeDevSnapshotToon({ pid: process.pid, ts: nowS } as ToonValue);
   try {
     writeFileSync(lockPath, payload, { encoding: "utf8", flag: "wx" });
     return true;
