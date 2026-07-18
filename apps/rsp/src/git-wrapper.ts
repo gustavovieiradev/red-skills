@@ -46,6 +46,10 @@ export interface GitRenderResult {
   };
 }
 
+type GitPayloadParseResult =
+  | { kind: "payload"; payload: JsonObject }
+  | { kind: "passthrough"; reason: string; family: string; stderrHead: string };
+
 export async function runGitWrapper(argv: readonly string[], options: GitRenderOptions): Promise<GitRenderResult> {
   const parsed = parseGitRenderCommand(argv);
   const subcommand = parseGitSubcommand(parsed.argv);
@@ -70,8 +74,24 @@ export async function renderGitContract(
   }
 
   const subcommand = parseGitSubcommand(parsedCommand.argv);
-  const payload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+  const parsedPayload = parseGitPayload(subcommand, parsedCommand.argv, contract.stdout, parsedCommand.query);
+  if (parsedPayload.kind === "passthrough") {
+    const stdout = Buffer.from(contract.stdout);
+    return {
+      stdout,
+      stderr: Buffer.from(contract.stderr),
+      status: contract.status,
+      signal: contract.signal,
+      rawOutput: stdout,
+      degradation: {
+        reason: parsedPayload.reason,
+        family: parsedPayload.family,
+        stderrHead: parsedPayload.stderrHead,
+      },
+    };
+  }
 
+  const payload = parsedPayload.payload;
   const fullToon = encode(payload);
   if (shouldEmitFull(subcommand, fullToon, parsedCommand.full, options)) {
     return {
@@ -223,56 +243,153 @@ async function collectGitContract(subcommand: GitSubcommand, rest: readonly stri
   });
 }
 
-function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): JsonObject {
+function parseGitPayload(subcommand: GitSubcommand, command: readonly string[], stdout: string, query?: string): GitPayloadParseResult {
   switch (subcommand) {
     case "status":
       return parseStatus(command, stdout, query);
     case "log":
-      return parseLog(command, stdout, query);
+      return payload(parseLog(command, stdout, query));
     case "diff":
-      return parseDiff(command, stdout, query);
+      return payload(parseDiff(command, stdout, query));
     case "commit":
-      return helpIfQueried(parseCommit(command, stdout), query, ["rsp git status --query <path-or-state>"]);
+      return payload(helpIfQueried(parseCommit(command, stdout), query, ["rsp git status --query <path-or-state>"]));
     case "push":
-      return helpIfQueried(parsePush(command, stdout), query, ["rsp gh pr list --query <branch>"]);
+      return payload(helpIfQueried(parsePush(command, stdout), query, ["rsp gh pr list --query <branch>"]));
     case "blame":
-      return parseBlame(command, stdout, query);
+      return payload(parseBlame(command, stdout, query));
     case "branch":
-      return parseBranch(command, stdout, query);
+      return payload(parseBranch(command, stdout, query));
     case "show":
-      return parseShow(command, stdout, query);
+      return payload(parseShow(command, stdout, query));
   }
 }
 
-function parseStatus(command: readonly string[], stdout: string, query?: string): JsonObject {
+function payload(payload: JsonObject): GitPayloadParseResult {
+  return { kind: "payload", payload };
+}
+
+function parseStatus(command: readonly string[], stdout: string, query?: string): GitPayloadParseResult {
   let branch = "";
   const rows: JsonObject[] = [];
-  for (const raw of stdout.split("\0")) {
+  let unknownRecords = 0;
+  const records = statusRecords(stdout);
+  for (let index = 0; index < records.length; index += 1) {
+    const raw = records[index] ?? "";
     if (!raw) continue;
     if (raw.startsWith("# branch.head ")) {
       branch = raw.slice("# branch.head ".length);
       continue;
     }
-    if (!raw.startsWith("1 ")) continue;
-    const parts = raw.split(" ");
-    const xy = parts[1] ?? "..";
-    const path = parts.slice(8).join(" ");
-    rows.push({
-      path,
-      index: xy[0] ?? ".",
-      worktree: xy[1] ?? ".",
-      state: statusState(xy),
-    });
+    if (raw.startsWith("# ")) continue;
+    if (raw.startsWith("## ")) {
+      branch = parseShortBranch(raw);
+      continue;
+    }
+
+    const parsed = parseStatusRecord(raw, records[index + 1]);
+    if (!parsed) {
+      unknownRecords += 1;
+      continue;
+    }
+    rows.push(parsed.row);
+    if (parsed.consumedNext) index += 1;
   }
-  if (rows.length === 0) return cleanStatusPayload(command.join(" "), branch);
+  if (rows.length === 0) {
+    if (unknownRecords > 0) {
+      return {
+        kind: "passthrough",
+        reason: "git-status-unparseable",
+        family: "git status",
+        stderrHead: "non-empty stdout did not match a known git status shape",
+      };
+    }
+    return payload(cleanStatusPayload(command.join(" "), branch));
+  }
   const filteredRows = filterRows(rows, query);
   const counts = countBy(filteredRows, "state");
-  return helpIfQueried({
+  return payload(helpIfQueried({
     command: command.join(" "),
     branch,
     rows: filteredRows as JsonValue,
     summary: `${query ? `${filteredRows.length}/${rows.length}` : filteredRows.length} changes: ${counts.added ?? 0} added, ${counts.modified ?? 0} modified, ${counts.deleted ?? 0} deleted`,
-  }, query, ["rsp git diff --query <path>", "rsp git log --query <subject>"]);
+  }, query, ["rsp git diff --query <path>", "rsp git log --query <subject>"]));
+}
+
+function statusRecords(stdout: string): string[] {
+  return stdout.includes("\0") ? stdout.split("\0") : stdout.split(/\r?\n/);
+}
+
+function parseStatusRecord(raw: string, next?: string): { row: JsonObject; consumedNext?: boolean } | null {
+  if (raw.startsWith("1 ")) return parsePorcelainV2OrdinaryStatus(raw);
+  if (raw.startsWith("2 ")) return parsePorcelainV2RenamedStatus(raw, next);
+  if (isShortStatusRecord(raw)) return parseShortStatus(raw, next);
+  return null;
+}
+
+function parsePorcelainV2OrdinaryStatus(raw: string): { row: JsonObject } | null {
+  const parts = raw.split(" ");
+  const xy = parts[1] ?? "..";
+  const path = parts.slice(8).join(" ");
+  if (!path) return null;
+  return { row: statusRow(path, xy) };
+}
+
+function parsePorcelainV2RenamedStatus(raw: string, next?: string): { row: JsonObject; consumedNext?: boolean } | null {
+  const parts = raw.split(" ");
+  const xy = parts[1] ?? "..";
+  const path = parts.slice(9).join(" ");
+  if (!path) return null;
+  return { row: statusRow(path, xy), consumedNext: Boolean(next && !looksLikeStatusRecord(next)) };
+}
+
+function parseShortStatus(raw: string, next?: string): { row: JsonObject; consumedNext?: boolean } | null {
+  const xy = raw.slice(0, 2);
+  const text = raw.slice(3);
+  if (text.length === 0) return null;
+  const renamed = xy.includes("R");
+  const arrow = " -> ";
+  const path = renamed && text.includes(arrow) ? text.slice(text.indexOf(arrow) + arrow.length) : text;
+  return {
+    row: statusRow(decodeStatusPath(path), xy),
+    consumedNext: renamed && Boolean(next && !looksLikeStatusRecord(next)),
+  };
+}
+
+function statusRow(path: string, xy: string): JsonObject {
+  return {
+    path,
+    index: statusSlot(xy[0]),
+    worktree: statusSlot(xy[1]),
+    state: statusState(xy),
+  };
+}
+
+function statusSlot(value: string | undefined): string {
+  return !value || value === " " ? "." : value;
+}
+
+function isShortStatusRecord(raw: string): boolean {
+  return /^[ MADRCU?!][ MADRCU?!] /.test(raw);
+}
+
+function looksLikeStatusRecord(raw: string): boolean {
+  return raw.startsWith("# ") || raw.startsWith("## ") || raw.startsWith("1 ") || raw.startsWith("2 ") || isShortStatusRecord(raw);
+}
+
+function parseShortBranch(raw: string): string {
+  const body = raw.slice("## ".length);
+  return body.split("...")[0]?.trim() ?? "";
+}
+
+function decodeStatusPath(path: string): string {
+  const trimmed = path.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (typeof parsed === "string") return parsed;
+    } catch {}
+  }
+  return trimmed;
 }
 
 export function cleanStatusPayload(command = "git status", branch = ""): JsonObject {
