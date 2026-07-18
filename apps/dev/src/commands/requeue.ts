@@ -16,9 +16,9 @@
 // re-run. The real adopt runner is built here; `RequeueAdoptRunner` is injectable
 // for tests (mirrors how `RequeueGh` is injected).
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { LIVENESS_LANE_FILENAME } from "@reddb-io/red-castle";
+import { LivenessLane, LIVENESS_LANE_FILENAME } from "@reddb-io/red-castle";
 import { parseFlags, type FlagSchema } from "@reddb-io/shared/args.js";
 import { execTool, type ExecFn } from "../runtime/exec.js";
 import { scrubOutbound } from "../runtime/outbound-redaction.js";
@@ -229,10 +229,7 @@ async function resolveRepo(cwd: string, explicit?: string): Promise<string> {
 function appendAdoptLivenessRecord(attemptDir: string): void {
   try {
     mkdirSync(attemptDir, { recursive: true });
-    appendFileSync(
-      join(attemptDir, LIVENESS_LANE_FILENAME),
-      `${JSON.stringify({ at: Date.now(), kind: "iteration-start" })}\n`,
-    );
+    void new LivenessLane({ path: join(attemptDir, LIVENESS_LANE_FILENAME) }).record("iteration-start").catch(() => {});
   } catch {
     // best-effort: the presence row still renders on pid liveness alone.
   }
