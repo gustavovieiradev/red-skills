@@ -108,10 +108,16 @@ async function seedFreshRepoCache(
 async function writeFleetSnapshot(
   root: string,
   over: Record<string, unknown> = {},
+  options: { writePid?: boolean; writeSnapshotLane?: boolean } = {},
 ): Promise<void> {
   const dir = dirname(afkPaths(root).supervisorPidPath);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "afk-supervisor.pid"), `${process.pid}\n`, "utf8");
+  if (options.writePid !== false) {
+    await writeFile(join(dir, "afk-supervisor.pid"), `${process.pid}\n`, "utf8");
+  }
+  if (options.writeSnapshotLane) {
+    await mkdir(join(dirname(dir), `s${process.pid}`), { recursive: true });
+  }
   await writeFile(
     join(dir, "state.toon"),
     JSON.stringify({
@@ -667,6 +673,18 @@ describe("statusline command — rendered line", () => {
     expect(rows[0]).toContain("flt=codex 1/1†");
     expect(rows[0]).toContain("q=2");
     expect(rows[0]).not.toContain("wrk=");
+  });
+
+  it("renders the fleet segment from a live supervisor snapshot lane when the pid anchor is missing", async () => {
+    await seedFreshRepoCache(root, 0, 0);
+    await seedFreshCache(root, 2, 0);
+    await writeFleetSnapshot(root, {}, { writePid: false, writeSnapshotLane: true });
+
+    const out = sink();
+    const code = await statuslineCommand([root], root, out.stream, fakeStdin(PAYLOAD));
+    expect(code).toBe(0);
+    expect(stripAnsi(out.text())).toContain("flt=codex 1/1");
+    expect(stripAnsi(out.text())).toContain("q=2");
   });
 
   it("leaves a healthy fleet segment unmarked when a busy slot has fresh worker liveness", async () => {
