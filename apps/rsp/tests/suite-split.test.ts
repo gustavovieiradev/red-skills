@@ -47,4 +47,22 @@ describe("apps/rsp suite split (#1873)", () => {
   test("no duplicate entries in the integration list", () => {
     expect(new Set(INTEGRATION_TESTS).size).toBe(INTEGRATION_TESTS.length);
   });
+
+  test("large rsp cli tests stay split into bounded sibling files", async () => {
+    const entries = await readdir(resolve(pkgRoot, "tests"), { withFileTypes: true });
+    const cliTests = entries
+      .filter((entry) => entry.isFile() && /^cli(?:-[a-z0-9-]+)?\.test\.ts$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+
+    expect(cliTests.length, "cli suite should be split into sibling test files").toBeGreaterThan(1);
+    for (const file of cliTests) {
+      const source = await readFile(resolve(pkgRoot, "tests", file), "utf8");
+      expect(source.split(/\r?\n/).length, `${file} line count`).toBeLessThanOrEqual(1200);
+      expect(source, `${file} imports shared cli helpers`).toContain("./cli-test-helpers.js");
+    }
+
+    const helper = await readFile(resolve(pkgRoot, "tests", "cli-test-helpers.ts"), "utf8");
+    expect(helper).toContain("function tempRoot");
+  });
 });
