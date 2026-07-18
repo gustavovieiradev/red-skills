@@ -89,13 +89,15 @@ import { hostFingerprintPrefix, workerIdentity } from "../core/host-identity.js"
 import { appendAgentRecord, appendRecordToonlTaggedRow } from "../core/jsonl-log.js";
 import { initStateSync, readPidStartTime, updateState, writeIdentitySync } from "../core/state.js";
 import { buildProgressHeartbeat, formatIterationMarker } from "../core/heartbeat.js";
-import { resolveAttemptLoc, locMemoPath, type LocMemo } from "../core/loc-memo.js";
+import { decodeLocMemoSniff, encodeLocMemoToon, resolveAttemptLoc, locMemoPath } from "../core/loc-memo.js";
 import { createActivityMeter } from "../core/activity-meter.js";
 import { createCastleWorkerLaneBridge } from "../core/castle-worker-lane-bridge.js";
 import { DEFAULT_MAX_ITERATIONS } from "../core/execution.js";
 import type { AgentStreamEvent } from "../core/execution.js";
 import { makeStaleClaimPredicate, resolveClaimStalenessConfig } from "../core/claim-staleness.js";
 import { renderClaimComment } from "../core/claim.js";
+import { decodeDevSnapshotSniff, encodeDevSnapshotToon } from "../core/toon-snapshot.js";
+import type { JsonValue as ToonValue } from "@reddb-io/toon";
 
 export interface RunOptions {
   args: string[];
@@ -1435,6 +1437,7 @@ export function buildProcessDeps(
         // incremental path is unaffected: a new commit moves the delta into the
         // sha-keyed committed memo. Render stays git-free either way.
         const memoPath = locMemoPath(current.attemptDir, "/");
+        const legacyMemoPath = join(current.attemptDir, ".loc-memo.json");
         const { added, removed } = await resolveAttemptLoc({
           headSha: head,
           compute: () =>
@@ -1442,16 +1445,19 @@ export function buildProcessDeps(
           computeUncommitted: () =>
             gitx.diffstatUncommitted({ cwd: worktree }).catch(() => ({ added: 0, removed: 0 })),
           readMemo: () => {
-            try {
-              const m = JSON.parse(readFileSync(memoPath, "utf8")) as Partial<LocMemo>;
-              return { sha: String(m.sha ?? ""), added: Number(m.added ?? 0), removed: Number(m.removed ?? 0) };
-            } catch {
-              return null;
+            for (const path of [memoPath, legacyMemoPath]) {
+              try {
+                const memo = decodeLocMemoSniff(readFileSync(path, "utf8"));
+                if (memo !== null) return memo;
+              } catch {
+                // keep looking for legacy memo names
+              }
             }
+            return null;
           },
           writeMemo: (m) => {
             try {
-              writeFileSync(memoPath, JSON.stringify(m), "utf8");
+              writeFileSync(memoPath, encodeLocMemoToon(m), "utf8");
             } catch {
               // best-effort, like the surrounding heartbeat writes
             }
@@ -1794,7 +1800,7 @@ interface CurrentAttempt {
 
 const DEFAULT_RUNNER_TRANSIENT_COOLDOWN_S = 300;
 
-async function recordBootError(workerDir: string, type: "boot-error" | "session-error", err: unknown): Promise<void> {
+export async function recordBootError(workerDir: string, type: "boot-error" | "session-error", err: unknown): Promise<void> {
   const message = err instanceof Error ? err.message : String(err);
   const stack = err instanceof Error ? err.stack : undefined;
   const payload = {
@@ -1804,7 +1810,7 @@ async function recordBootError(workerDir: string, type: "boot-error" | "session-
     stack,
   };
   await fsx.ensureDir(workerDir);
-  await writeFile(join(workerDir, `${type}.log`), `${JSON.stringify(payload)}\n`, "utf8");
+  await writeFile(join(workerDir, `${type}.log`), `${encodeDevSnapshotToon(payload as unknown as ToonValue)}\n`, "utf8");
   process.stderr.write(`[afk] ${type}: ${message}\n`);
 }
 
@@ -1821,7 +1827,7 @@ function runnerTransientCooldownS(env: Record<string, string | undefined>): numb
   return DEFAULT_RUNNER_TRANSIENT_COOLDOWN_S;
 }
 
-async function openRunnerCircuit(
+export async function openRunnerCircuit(
   circuitDir: string,
   runner: Runner,
   nowS: number,
@@ -1831,24 +1837,24 @@ async function openRunnerCircuit(
   await fsx.ensureDir(circuitDir);
   await writeFile(
     runnerCircuitPath(circuitDir, runner),
-    `${JSON.stringify({
+    `${encodeDevSnapshotToon({
       runner,
       opened_at: nowS,
       expires_at: nowS + cooldownS,
       reason: "runner-transient",
-    })}\n`,
+    } as unknown as ToonValue)}\n`,
     "utf8",
   );
 }
 
-async function runnerCircuitOpen(
+export async function runnerCircuitOpen(
   circuitDir: string,
   runner: Runner,
   nowS: number,
 ): Promise<boolean> {
   try {
     const raw = await readFile(runnerCircuitPath(circuitDir, runner), "utf8");
-    const parsed = JSON.parse(raw) as { expires_at?: unknown };
+    const parsed = decodeDevSnapshotSniff(raw) as { expires_at?: unknown };
     return typeof parsed.expires_at === "number" && parsed.expires_at > nowS;
   } catch {
     return false;
