@@ -191,6 +191,35 @@ describe("fleet command stale supervisor state", () => {
     }
   });
 
+  it("stopFleet discovers a live supervisor from the structured supervisor lane when the pid anchor is missing (#2087)", async () => {
+    const root = scratch();
+    try {
+      const paths = afkPaths(root);
+      const stateAfk = dirname(paths.supervisorPidPath);
+      mkdirSync(stateAfk, { recursive: true });
+      mkdirSync(join(root, ".red", "tmp", "supervisors", "s12345"), { recursive: true });
+      const epoch = Math.floor(Date.now() / 1000);
+      writeFileSync(
+        paths.fleetStatePath,
+        JSON.stringify({
+          epoch,
+          last_progress_epoch: epoch,
+          runner: "codex",
+          slots: { busy: 1, free: 1, total: 2, parked: 0 },
+        }),
+        "utf8",
+      );
+      vi.mocked(isLivePid).mockImplementationOnce((pid: number) => pid === 12345).mockReturnValue(false);
+
+      const result = await stopFleet(root, stream());
+
+      expect(result).toMatchObject({ status: "stopped", pid: 12345 });
+      expect(killTreeMocks.killTreeAndWait).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("launchFleet writes a resize request when a healthy supervisor is already running", async () => {
       const root = scratch();
     try {
