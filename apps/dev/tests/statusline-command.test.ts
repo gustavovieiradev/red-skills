@@ -688,6 +688,33 @@ describe("statusline command — rendered line", () => {
     expect(stripAnsi(out.text())).not.toContain("flt=codex 1/1†");
   });
 
+  it("renders the fleet segment from a fresh snapshot plus live castle supervisor lane when the pid anchor is missing", async () => {
+    await seedFreshRepoCache(root, 0, 0);
+    await seedFreshCache(root, 2, 0);
+    await writeFleetSnapshot(root);
+    await rm(afkPaths(root).supervisorPidPath, { force: true });
+    const supervisorId = `s${process.pid}`;
+    const supervisorDir = join(root, ".red", "state", "castle", "supervisors", supervisorId);
+    await mkdir(supervisorDir, { recursive: true });
+    await writeFile(
+      join(supervisorDir, "state.toon"),
+      encode({
+        kind: "supervisor",
+        id: supervisorId,
+        version: 1,
+        updated_at: new Date().toISOString(),
+        pid: process.pid,
+      }),
+      "utf8",
+    );
+
+    const out = sink();
+    const code = await statuslineCommand([root], root, out.stream, fakeStdin(PAYLOAD));
+    expect(code).toBe(0);
+    expect(stripAnsi(out.text())).toContain("flt=codex 1/1");
+    expect(stripAnsi(out.text())).toContain("q=2");
+  });
+
   it("suppresses the fleet segment when the supervisor pid is dead", async () => {
     await seedFreshRepoCache(root, 0, 0);
     await seedFreshCache(root, 2, 0);
