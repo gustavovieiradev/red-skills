@@ -20,6 +20,34 @@ export async function readSupervisorPid(pidFile: string): Promise<number | null>
   }
 }
 
+function parseSupervisorLanePid(name: string): number | null {
+  const match = /^s([1-9][0-9]*)$/.exec(name);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+export async function discoverLiveSupervisorPid(
+  defaultDir: string,
+  isLivePid: (pid: number) => boolean = defaultIsLivePid,
+): Promise<number | null> {
+  const pid = await readSupervisorPid(join(defaultDir, "afk-supervisor.pid"));
+  if (pid !== null && isLivePid(pid)) return pid;
+
+  const supervisorsRoot = join(defaultDir, "..");
+  let entries: string[];
+  try {
+    entries = await readdir(supervisorsRoot);
+  } catch {
+    return null;
+  }
+  for (const entry of entries.sort()) {
+    const lanePid = parseSupervisorLanePid(entry);
+    if (lanePid !== null && isLivePid(lanePid)) return lanePid;
+  }
+  return null;
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await access(path, constants.F_OK);
