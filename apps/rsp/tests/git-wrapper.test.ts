@@ -332,6 +332,65 @@ describe("rsp git token levers", () => {
     expect(decoded.summary).toMatch(/^1\/3 changes:/);
     expect(decoded.help).toContain("rsp git diff --query <path>");
   });
+
+  it("parses short status rows instead of reporting a dirty tree as clean", async () => {
+    for (const flag of ["--short", "-s"]) {
+      const result = await renderGitContract(["git", "status", flag], {
+        stdout: [
+          "## feature/rsp",
+          " M apps/rsp/src/cli.ts",
+          "?? apps/rsp/src/new file.ts",
+          "R  apps/rsp/src/new-name.ts",
+          "apps/rsp/src/old-name.ts",
+          "",
+        ].join("\0"),
+        stderr: "",
+        status: 0,
+        signal: null,
+      }, { level: "lossless" });
+      const decoded = decode(result.stdout.toString("utf8")) as {
+        branch: string;
+        rows: Array<{ path: string; index: string; worktree: string; state: string }>;
+        summary: string;
+      };
+
+      expect(decoded.branch).toBe("feature/rsp");
+      expect(decoded.rows).toEqual([
+        { path: "apps/rsp/src/cli.ts", index: ".", worktree: "M", state: "modified" },
+        { path: "apps/rsp/src/new file.ts", index: "?", worktree: "?", state: "added" },
+        { path: "apps/rsp/src/new-name.ts", index: "R", worktree: ".", state: "renamed" },
+      ]);
+      expect(decoded.summary).toMatch(/^3 changes:/);
+      expect(decoded.summary).not.toContain("clean");
+    }
+  });
+
+  it("falls open to raw output for non-empty status stdout it cannot classify", async () => {
+    const raw = "unexpected status output\n";
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: raw,
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+
+    expect(result.stdout.toString("utf8")).toBe(raw);
+    expect(result.stdout.toString("utf8")).not.toContain("git status clean: 0 changes");
+  });
+
+  it("still summarizes an empty short status stdout as clean", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { empty: boolean; rows: unknown[]; summary: string };
+
+    expect(decoded.empty).toBe(true);
+    expect(decoded.rows).toEqual([]);
+    expect(decoded.summary).toBe("git status clean: 0 changes");
+  });
 });
 
 function toPreviousRedundantLogStdout(stdout: string): string {
