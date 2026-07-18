@@ -2162,9 +2162,29 @@ describe("startAttemptGuard — onTick (externalized heartbeat cadence)", () => 
     clock = 1050;
     await sched.tick();
     expect(ticks.length).toBe(2);
-    expect(ticks[0]!.head).toBe("sha1");
+    expect(ticks[1]!.head).toBe("sha1");
     expect(typeof ticks[0]!.lastProgressMs).toBe("number");
     expect(typeof ticks[0]!.nowMs).toBe("number");
+  });
+
+  it("fires onTick even when an async guard probe is still pending", async () => {
+    const sched = manualScheduler();
+    const ticks: AttemptProgressInfo[] = [];
+    startAttemptGuard({
+      capMs: 100_000,
+      intervalMs: 50,
+      headProbe: async () => "sha1",
+      now: () => 1000,
+      schedule: sched.schedule,
+      abort: () => {},
+      goalProbe: () => new Promise<boolean | undefined>(() => {}),
+      onTick: (i) => ticks.push(i),
+    });
+
+    await sched.tick();
+
+    expect(ticks).toHaveLength(1);
+    expect(ticks[0]!.nowMs).toBe(1000);
   });
 });
 
