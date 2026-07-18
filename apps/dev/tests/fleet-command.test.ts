@@ -191,6 +191,23 @@ describe("fleet command stale supervisor state", () => {
     }
   });
 
+  it("stopFleet discovers a live supervisor from the s<PID> snapshot lane when the pid file is missing (#2087)", async () => {
+    const root = scratch();
+    try {
+      const paths0 = afkPaths(root);
+      const supervisorsRoot = dirname(dirname(paths0.supervisorPidPath));
+      mkdirSync(join(supervisorsRoot, "s12345"), { recursive: true });
+      vi.mocked(isLivePid).mockReturnValueOnce(true).mockReturnValue(false);
+
+      const result = await stopFleet(root, stream());
+
+      expect(result).toMatchObject({ status: "stopped", pid: 12345 });
+      expect(killTreeMocks.killTreeAndWait).not.toHaveBeenCalledWith(12345);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("launchFleet writes a resize request when a healthy supervisor is already running", async () => {
       const root = scratch();
     try {
