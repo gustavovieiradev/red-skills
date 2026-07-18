@@ -17,7 +17,7 @@ import { teardownWedgedSupervisor } from "../core/watchdog.js";
 import { buildWatchdogIO } from "../runtime/watchdog-io.js";
 import { spawnSupervisor } from "../runtime/supervisor-spawn.js";
 import { isLivePid, killTreeAndWait } from "../runtime/kill-tree.js";
-import { reapStaleSupervisorState } from "../runtime/supervisor-state.js";
+import { discoverLiveSupervisorPid, reapStaleSupervisorState } from "../runtime/supervisor-state.js";
 
 export interface FleetLaunchResult {
   status: "launched" | "resized";
@@ -159,6 +159,7 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
   const stateAfk = dirname(paths.supervisorPidPath);
   const pidFile = paths.supervisorPidPath;
   const stopFile = join(dirname(pidFile), "afk-supervisor.stop");
+  const resolvedPid = await discoverLiveSupervisorPid(stateAfk, isLivePid);
   // Detached workers survive the supervisor's death (#2056): they are spawned
   // `detached: true` so they are NOT in the supervisor's process tree. Every stop
   // path must sweep them — otherwise a "stopped" report is a lie while orphaned
@@ -172,7 +173,9 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
       stdout.write(`terminated ${killed} orphaned worker${killed === 1 ? "" : "s"} and reconciled their claims.\n`);
     }
   };
-  const supervisor = await reapStaleSupervisorState(stateAfk, isLivePid);
+  const supervisor = resolvedPid !== null
+    ? { status: "live" as const, pid: resolvedPid, removed: [] }
+    : await reapStaleSupervisorState(stateAfk, isLivePid);
   if (supervisor.status === "stale") {
     await sweepOrphans();
     stdout.write(`no fleet running (reason=dead supervisor pid; stale files cleaned).\n`);
@@ -185,9 +188,10 @@ export async function stopFleet(root = process.cwd(), stdout: NodeJS.WritableStr
     return { status: "none" };
   }
   await writeFile(stopFile, "", "utf8");
+  const hadPidFile = await fileExists(pidFile);
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (!(await fileExists(pidFile)) || !isLivePid(pid)) {
+    if ((hadPidFile && !(await fileExists(pidFile))) || !isLivePid(pid)) {
       // The supervisor's own terminateAll should have killed its slots on clean
       // exit, but sweep detached survivors anyway — a slot the loop lost track of
       // (moved-pid, mid-spawn) would otherwise outlive the "stopped" report.
