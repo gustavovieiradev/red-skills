@@ -700,6 +700,20 @@ describe("statusline command — rendered line", () => {
     expect(stripAnsi(out.text())).not.toContain("flt=");
   });
 
+  it("renders the fleet segment when only a live supervisor snapshot lane names the pid (#2087)", async () => {
+    await seedFreshRepoCache(root, 0, 0);
+    await seedFreshCache(root, 2, 0);
+    await writeFleetSnapshot(root);
+    await rm(afkPaths(root).supervisorPidPath, { force: true });
+    await mkdir(join(dirname(dirname(afkPaths(root).supervisorPidPath)), `s${process.pid}`), { recursive: true });
+
+    const out = sink();
+    const code = await statuslineCommand([root], root, out.stream, fakeStdin(PAYLOAD));
+    expect(code).toBe(0);
+    expect(stripAnsi(out.text())).toContain("flt=codex 1/1");
+    expect(stripAnsi(out.text())).toContain("q=2");
+  });
+
   it("suppresses the fleet segment when the supervisor snapshot is stale", async () => {
     await seedFreshRepoCache(root, 0, 0);
     await seedFreshCache(root, 2, 0);
