@@ -10,6 +10,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { decodeSnapshotDocument, encodeSnapshotToon } from "@reddb-io/shared/toon-migration.js";
 import { injectBridgeSdk, type InjectConfig } from "./inject.js";
 import { normalizeAnnotationInput, type Annotation, type AnnotationInput } from "./annotation.js";
 
@@ -41,6 +42,17 @@ export interface OpenArtifactOptions {
   now?: string;
 }
 
+interface StoredAnnotation {
+  id: string;
+  selector: string;
+  textRangeStart: number | null;
+  textRangeEnd: number | null;
+  textRangeQuote: string | null;
+  comment: string;
+  createdAt: string;
+  status: Annotation["status"];
+}
+
 function sessionDir(root: string, id: string): string {
   return join(root, BRIDGE_DIR, id);
 }
@@ -52,10 +64,84 @@ function slugify(s: string): string {
 function readJson<T>(path: string, fallback: T): T {
   if (!existsSync(path)) return fallback;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
+    return decodeSnapshotDocument(readFileSync(path, "utf8")) as T;
   } catch {
     return fallback;
   }
+}
+
+function writeSnapshot(path: string, value: unknown): void {
+  writeFileSync(path, encodeSnapshotToon(value as Parameters<typeof encodeSnapshotToon>[0]), "utf8");
+}
+
+function flattenAnnotation(annotation: Annotation): StoredAnnotation {
+  return {
+    id: annotation.id,
+    selector: annotation.selector,
+    textRangeStart: annotation.textRange?.start ?? null,
+    textRangeEnd: annotation.textRange?.end ?? null,
+    textRangeQuote: annotation.textRange?.quote ?? null,
+    comment: annotation.comment,
+    createdAt: annotation.createdAt,
+    status: annotation.status,
+  };
+}
+
+function inflateAnnotation(value: unknown): Annotation | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (
+    typeof row.id !== "string" ||
+    typeof row.selector !== "string" ||
+    typeof row.comment !== "string" ||
+    typeof row.createdAt !== "string" ||
+    (row.status !== "open" && row.status !== "resolved")
+  ) {
+    return null;
+  }
+  const annotation: Annotation = {
+    id: row.id,
+    selector: row.selector,
+    comment: row.comment,
+    createdAt: row.createdAt,
+    status: row.status,
+  };
+  if (
+    Number.isFinite(row.textRangeStart) &&
+    Number.isFinite(row.textRangeEnd) &&
+    typeof row.textRangeQuote === "string"
+  ) {
+    annotation.textRange = {
+      start: Number(row.textRangeStart),
+      end: Number(row.textRangeEnd),
+      quote: row.textRangeQuote,
+    };
+  } else if (
+    typeof row.textRange === "object" &&
+    row.textRange !== null &&
+    !Array.isArray(row.textRange) &&
+    Number.isFinite((row.textRange as Record<string, unknown>).start) &&
+    Number.isFinite((row.textRange as Record<string, unknown>).end) &&
+    typeof (row.textRange as Record<string, unknown>).quote === "string"
+  ) {
+    const textRange = row.textRange as Record<string, unknown>;
+    annotation.textRange = {
+      start: Number(textRange.start),
+      end: Number(textRange.end),
+      quote: textRange.quote as string,
+    };
+  }
+  return annotation;
+}
+
+function readAnnotations(path: string): Annotation[] {
+  const decoded = readJson<unknown>(path, []);
+  if (!Array.isArray(decoded)) return [];
+  return decoded.map(inflateAnnotation).filter((annotation): annotation is Annotation => annotation !== null);
+}
+
+function writeAnnotations(path: string, annotations: readonly Annotation[]): void {
+  writeSnapshot(path, annotations.map(flattenAnnotation));
 }
 
 /**
@@ -86,9 +172,9 @@ export function openArtifact(htmlPath: string, opts: OpenArtifactOptions = {}): 
     status: "open",
     createdAt,
   };
-  writeFileSync(join(dir, "session.json"), JSON.stringify(session, null, 2), "utf8");
+  writeSnapshot(join(dir, "session.json"), session);
   if (!existsSync(join(dir, "annotations.json"))) {
-    writeFileSync(join(dir, "annotations.json"), "[]", "utf8");
+    writeAnnotations(join(dir, "annotations.json"), []);
   }
   return session;
 }
@@ -102,7 +188,7 @@ export function loadSession(root: string, id: string): Session | null {
 
 /** All annotations for a session, in submission order. */
 export function listAnnotations(root: string, id: string): Annotation[] {
-  return readJson<Annotation[]>(join(sessionDir(root, id), "annotations.json"), []);
+  return readAnnotations(join(sessionDir(root, id), "annotations.json"));
 }
 
 /**
@@ -130,7 +216,7 @@ export function recordAnnotation(
     status: "open",
   };
   existing.push(annotation);
-  writeFileSync(join(dir, "annotations.json"), JSON.stringify(existing, null, 2), "utf8");
+  writeAnnotations(join(dir, "annotations.json"), existing);
   return annotation;
 }
 
@@ -157,7 +243,7 @@ export function resolveAnnotation(root: string, id: string, annotationId: string
   const target = all.find((a) => a.id === annotationId);
   if (!target) throw new Error(`unknown annotation ${annotationId} in session ${id}`);
   target.status = "resolved";
-  writeFileSync(join(dir, "annotations.json"), JSON.stringify(all, null, 2), "utf8");
+  writeAnnotations(join(dir, "annotations.json"), all);
 }
 
 /** Close a session (sets status; state is retained for the record). */
@@ -165,7 +251,7 @@ export function closeSession(root: string, id: string): void {
   const session = loadSession(root, id);
   if (!session) throw new Error(`unknown bridge session: ${id}`);
   session.status = "closed";
-  writeFileSync(join(sessionDir(root, id), "session.json"), JSON.stringify(session, null, 2), "utf8");
+  writeSnapshot(join(sessionDir(root, id), "session.json"), session);
 }
 
 /** List all session ids present under the bridge state dir. */
