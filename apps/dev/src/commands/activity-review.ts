@@ -22,6 +22,8 @@ import {
 import { readHistoryRecords, type HistoryRecord } from "../core/history.js";
 import { collectMonitorInputs, afkPaths, resolveRepoContext } from "../runtime/wire.js";
 import { execTool, type ExecFn } from "../runtime/exec.js";
+import { decodeDevSnapshotSniff, encodeDevSnapshotToon } from "../core/toon-snapshot.js";
+import type { JsonValue as ToonValue } from "@reddb-io/toon";
 
 /** Output format. TOON is the default agent-facing wire format (PRD #928 / ADR
  * 0081); `--json` forces raw JSON (tooling/escape hatch), `--human` the prose. */
@@ -278,6 +280,10 @@ interface TokenFileCache {
 type TokenSummaryCache = Record<string, TokenFileCache>;
 
 function tokenCachePath(workersRoot: string): string {
+  return join(workersRoot, ".activity-review-token-cursors.toon");
+}
+
+function legacyTokenCachePath(workersRoot: string): string {
   return join(workersRoot, ".activity-review-token-cursors.json");
 }
 
@@ -332,7 +338,7 @@ function validTokenFileCache(value: unknown): TokenFileCache | null {
 
 async function readTokenSummaryCache(path: string): Promise<TokenSummaryCache> {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const parsed = decodeDevSnapshotSniff(await readFile(path, "utf8")) as Record<string, unknown>;
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const out: TokenSummaryCache = {};
     for (const [file, value] of Object.entries(parsed)) {
@@ -346,7 +352,7 @@ async function readTokenSummaryCache(path: string): Promise<TokenSummaryCache> {
 }
 
 async function writeTokenSummaryCache(path: string, cache: TokenSummaryCache): Promise<void> {
-  await writeFile(path, `${JSON.stringify(cache)}\n`, "utf8");
+  await writeFile(path, `${encodeDevSnapshotToon(cache as unknown as ToonValue)}\n`, "utf8");
 }
 
 async function listRetainedLogFiles(workersRoot: string): Promise<string[]> {
@@ -397,7 +403,10 @@ export async function collectTokenSummary(workersRoot: string, start: Date, end:
   let sourceRecords = 0;
   const files = await listRetainedLogFiles(workersRoot);
   const cachePath = tokenCachePath(workersRoot);
-  const previous = await readTokenSummaryCache(cachePath);
+  let previous = await readTokenSummaryCache(cachePath);
+  if (Object.keys(previous).length === 0) {
+    previous = await readTokenSummaryCache(legacyTokenCachePath(workersRoot));
+  }
   const next: TokenSummaryCache = {};
   for (const file of files) {
     let text: string;
