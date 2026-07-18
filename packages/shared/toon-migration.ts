@@ -18,6 +18,16 @@ export function encodeSnapshotToon(value: JsonValue): string {
   return encode(value, { keyedMapCollapse: true });
 }
 
+export function decodeSnapshotDocument(raw: string): unknown {
+  const body = raw.trim();
+  if (!body) return null;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return decode(body);
+  }
+}
+
 export type RegisteredToonSurfaceKind = "toon" | "toonl";
 export type RegisteredToonSurfacePlugin = "memory" | "brain" | "dev";
 
@@ -463,13 +473,7 @@ async function readJsonPid(path: string): Promise<number | null> {
 }
 
 function readSnapshotDocument(raw: string): unknown {
-  const body = raw.trim();
-  if (!body) return null;
-  try {
-    return JSON.parse(body) as unknown;
-  } catch {
-    return decode(body);
-  }
+  return decodeSnapshotDocument(raw);
 }
 
 function parsePid(raw: string): number | null {
