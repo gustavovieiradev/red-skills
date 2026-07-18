@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { reapDeadSupervisorSnapshotDirs } from "../src/runtime/supervisor-state.js";
+import { reapDeadSupervisorSnapshotDirs, resolveLiveSupervisorPid } from "../src/runtime/supervisor-state.js";
 
 function scratch(): string {
   return mkdtempSync(join(tmpdir(), "afk-supervisor-state-"));
@@ -33,6 +33,27 @@ describe("reapDeadSupervisorSnapshotDirs", () => {
       expect(existsSync(live)).toBe(true);
       expect(existsSync(current)).toBe(true);
       expect(existsSync(named)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveLiveSupervisorPid", () => {
+  it("falls back to a live sibling s<PID> supervisor lane when the canonical pid file is missing (#2087)", async () => {
+    const root = scratch();
+    try {
+      const supervisorDir = join(root, ".red", "tmp", "supervisors", "default");
+      const supervisors = join(root, ".red", "tmp", "supervisors");
+      mkdirSync(join(supervisors, "s12345"), { recursive: true });
+      mkdirSync(supervisorDir, { recursive: true });
+
+      await expect(
+        resolveLiveSupervisorPid(
+          join(supervisorDir, "afk-supervisor.pid"),
+          (pid) => pid === 12345,
+        ),
+      ).resolves.toBe(12345);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
