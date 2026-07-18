@@ -332,6 +332,65 @@ describe("rsp git token levers", () => {
     expect(decoded.summary).toMatch(/^1\/3 changes:/);
     expect(decoded.help).toContain("rsp git diff --query <path>");
   });
+
+  it("parses short git status rows instead of fabricating a clean tree", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: ["## main", " M src/app.ts", "?? src/new.ts", "R  src/old.ts -> src/renamed.ts", ""].join("\n"),
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { branch: string; rows: Array<{ path: string; state: string }>; summary: string };
+
+    expect(decoded.branch).toBe("main");
+    expect(decoded.rows).toEqual([
+      expect.objectContaining({ path: "src/app.ts", state: "modified" }),
+      expect.objectContaining({ path: "src/new.ts", state: "added" }),
+      expect.objectContaining({ path: "src/renamed.ts", state: "renamed" }),
+    ]);
+    expect(decoded.summary).not.toContain("clean");
+  });
+
+  it("parses NUL-delimited short git status rename records", async () => {
+    const result = await renderGitContract(["git", "status", "-s"], {
+      stdout: ["## main", "R  src/renamed.ts", "src/old.ts", "?? src/new.ts", ""].join("\0"),
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { rows: Array<{ old_path?: string; path: string; state: string }>; summary: string };
+
+    expect(decoded.rows).toEqual([
+      expect.objectContaining({ old_path: "src/old.ts", path: "src/renamed.ts", state: "renamed" }),
+      expect.objectContaining({ path: "src/new.ts", state: "added" }),
+    ]);
+    expect(decoded.summary).toMatch(/^2 changes:/);
+  });
+
+  it("passes through non-empty unparseable git status output instead of reporting clean", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "unexpected non-empty status shape\n",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+
+    expect(result.stdout.toString("utf8")).toBe("unexpected non-empty status shape\n");
+    expect(result.payload).toBeUndefined();
+  });
+
+  it("reports clean for genuinely empty git status stdout", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { empty: boolean; summary: string };
+
+    expect(decoded.empty).toBe(true);
+    expect(decoded.summary).toBe("git status clean: 0 changes");
+  });
 });
 
 function toPreviousRedundantLogStdout(stdout: string): string {
