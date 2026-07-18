@@ -38,6 +38,7 @@ import {
   resolveBundle,
 } from "./bundle-fetch.js";
 import type { ReleaseChannel } from "./channel.js";
+import { decodeSnapshotDocument, encodeSnapshotToon } from "./toon-migration.js";
 
 /**
  * IO surface for self-update: the {@link BundleIO} download/read/write/hash set
@@ -151,7 +152,7 @@ export interface SelfUpdateStateRecord {
 
 function readState(text: string): SelfUpdateStateRecord {
   try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const parsed = decodeSnapshotDocument(text) as Record<string, unknown>;
     const out: SelfUpdateStateRecord = {};
     if (Number.isFinite(parsed.lastCheckAtMs)) out.lastCheckAtMs = Number(parsed.lastCheckAtMs);
     if (Number.isFinite(parsed.lastSuccessAtMs)) out.lastSuccessAtMs = Number(parsed.lastSuccessAtMs);
@@ -169,6 +170,10 @@ function readState(text: string): SelfUpdateStateRecord {
   } catch {
     return {};
   }
+}
+
+function stateRecordForWrite(state: SelfUpdateStateRecord): SelfUpdateStateRecord {
+  return Object.fromEntries(Object.entries(state).filter(([, value]) => value !== undefined)) as SelfUpdateStateRecord;
 }
 
 async function readStateFile(
@@ -192,7 +197,10 @@ async function writeStateFile(
   patch: SelfUpdateStateRecord,
 ): Promise<void> {
   const prior = await readStateFile(io, cacheDir, plugin);
-  await io.writeFile(statusPath(cacheDir, plugin), new TextEncoder().encode(JSON.stringify({ ...prior, ...patch })));
+  await io.writeFile(
+    statusPath(cacheDir, plugin),
+    new TextEncoder().encode(encodeSnapshotToon(stateRecordForWrite({ ...prior, ...patch }))),
+  );
 }
 
 async function tryWriteStateFile(
