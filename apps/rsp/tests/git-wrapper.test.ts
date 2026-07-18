@@ -332,6 +332,50 @@ describe("rsp git token levers", () => {
     expect(decoded.summary).toMatch(/^1\/3 changes:/);
     expect(decoded.help).toContain("rsp git diff --query <path>");
   });
+
+  it("parses dirty short status rows instead of synthesizing clean", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: " M apps/rsp/src/git-wrapper.ts\0?? apps/rsp/tests/git-wrapper.test.ts\0R  old-name.ts -> new-name.ts\0",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { rows: Array<{ path: string; index: string; worktree: string; state: string }>; summary: string };
+
+    expect(decoded.rows).toEqual([
+      { path: "apps/rsp/src/git-wrapper.ts", index: ".", worktree: "M", state: "modified" },
+      { path: "apps/rsp/tests/git-wrapper.test.ts", index: "?", worktree: "?", state: "changed" },
+      { path: "new-name.ts", index: "R", worktree: ".", state: "renamed" },
+    ]);
+    expect(decoded.summary).not.toContain("clean");
+  });
+
+  it("fails open for non-empty unparseable status stdout", async () => {
+    const stdout = "status shape the wrapper does not classify\0";
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout,
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+
+    expect(result.stdout.toString("utf8")).toBe(stdout);
+    expect(result.rawOutput?.toString("utf8")).toBe(stdout);
+    expect(result.degradation).toMatchObject({ reason: "git-status-unparseable", family: "git status" });
+  });
+
+  it("keeps empty short status stdout clean", async () => {
+    const result = await renderGitContract(["git", "status", "-s"], {
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { empty: boolean; summary: string };
+
+    expect(decoded.empty).toBe(true);
+    expect(decoded.summary).toBe("git status clean: 0 changes");
+  });
 });
 
 function toPreviousRedundantLogStdout(stdout: string): string {
