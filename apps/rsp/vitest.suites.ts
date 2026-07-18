@@ -5,7 +5,10 @@
 // wall-clock/benchmark behavior run as an explicit integration suite instead.
 
 export const INTEGRATION_TESTS: readonly string[] = [
-  "cli.test.ts",
+  "cli-01-core.test.ts",
+  "cli-02-resident.test.ts",
+  "cli-03-elision-telemetry.test.ts",
+  "cli-04-wait-show.test.ts",
   "elision-store.test.ts",
   "intercept.test.ts",
   "proxy.test.ts",
