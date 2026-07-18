@@ -1274,8 +1274,15 @@ export async function runAgent(deps: SandcastleDeps, input: RunAgentInput): Prom
   let timeoutReason: AttemptTimeoutReason | undefined;
   let laneReaper: { stop: () => void; firedReap: () => boolean } | undefined;
   let controller: AbortController | undefined;
+  let heartbeatIntervalMs = 60_000;
+  let lastHeartbeatEmitMs: number | undefined;
+  const emitHeartbeat = (info: AttemptProgressInfo): void => {
+    lastHeartbeatEmitMs = info.nowMs;
+    input.onHeartbeat?.(info);
+  };
   if (input.attemptTimeoutSeconds && input.attemptTimeoutSeconds > 0 && input.headProbe) {
     const capMs = input.attemptTimeoutSeconds * 1000;
+    heartbeatIntervalMs = Math.min(capMs, 60_000);
     controller = makeController();
     const cap = input.attemptTimeoutSeconds;
     const hardCap = input.attemptHardCapSeconds;
@@ -1310,9 +1317,43 @@ export async function runAgent(deps: SandcastleDeps, input: RunAgentInput): Prom
       // Externalized proof-of-life (PR-B): each poll fires the caller's opaque
       // heartbeat sink (firehose record + state.last_progress_at + on_heartbeat
       // hook). execution.ts stays ignorant of what it does.
-      ...(input.onHeartbeat ? { onTick: input.onHeartbeat } : {}),
+      ...(input.onHeartbeat ? { onTick: emitHeartbeat } : {}),
     });
   }
+
+  const streamHeartbeatInput =
+    input.runner === "codex" && input.onHeartbeat
+      ? {
+          ...input,
+          onAgentEvent: (event: AgentStreamEvent) => {
+            input.onAgentEvent?.(event);
+            const tickNow = now();
+            if (
+              lastHeartbeatEmitMs !== undefined &&
+              tickNow - lastHeartbeatEmitMs < heartbeatIntervalMs
+            ) {
+              return;
+            }
+            lastHeartbeatEmitMs = tickNow;
+            void (async () => {
+              let head: string | undefined;
+              if (input.headProbe) {
+                try {
+                  head = await input.headProbe();
+                } catch {
+                  head = undefined;
+                }
+              }
+              emitHeartbeat({
+                head,
+                lastProgressMs: tickNow,
+                nowMs: tickNow,
+                ...(input.base ? { base: input.base } : {}),
+              });
+            })();
+          },
+        }
+      : input;
 
   // Lane-idle stall reaper (issue #363): the solo-path port of the fleet's
   // passive stall detector + hard stall reaper. COMPLEMENTARY to the progress
@@ -1352,7 +1393,7 @@ export async function runAgent(deps: SandcastleDeps, input: RunAgentInput): Prom
 
   let result: RunResult;
   try {
-    const options = buildRunOptions(deps, input);
+    const options = buildRunOptions(deps, streamHeartbeatInput);
     result = await deps.run(controller ? { ...options, signal: controller.signal } : options);
   } catch (error) {
     // The lane-idle reaper aborted: agent lane silent past the kill threshold
