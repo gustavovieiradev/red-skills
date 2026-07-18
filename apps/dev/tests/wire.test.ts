@@ -14,6 +14,7 @@ import {
   afkPaths,
   resolveRunSettings,
   collectMonitorInputs,
+  collectStatuslineFleet,
   collectStatuslineWorkers,
   readFleetState,
   resolveAttemptGuardArming,
@@ -532,6 +533,43 @@ describe("collectMonitorInputs", () => {
       });
       const { fleet } = await collectMonitorInputs(root);
       expect(fleet?.readyForAgent).toBe(9);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("renders statusline fleet from a fresh state file when the pid only exists in the supervisor snapshot lane", async () => {
+    const root = scratch();
+    try {
+      const paths = afkPaths(root);
+      mkdirSync(dirname(paths.fleetStatePath), { recursive: true });
+      mkdirSync(join(root, ".red", "tmp", "supervisors", `s${process.pid}`), { recursive: true });
+      writeFileSync(
+        paths.fleetStatePath,
+        JSON.stringify({
+          ts: "2026-05-30T11:00:00Z",
+          epoch: 1780138800,
+          runner: "codex",
+          ready_for_agent: 9,
+          slots: { busy: 1, free: 2, total: 3, parked: 0 },
+          spawns_this_tick: 1,
+          bundle_version: "2.69.2",
+        }),
+      );
+
+      await expect(
+        collectStatuslineFleet(
+          { root, repo: "reddb-io/red-skills", remote: "origin" },
+          120,
+          1780138805,
+        ),
+      ).resolves.toMatchObject({
+        runner: "codex",
+        busy: 1,
+        total: 3,
+        queue: 9,
+        bundleVersion: "2.69.2",
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
