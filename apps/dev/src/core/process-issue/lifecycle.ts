@@ -121,6 +121,9 @@ import type { ProcessIssueDeps, ProcessIssueInput, ProcessIssueResult, WorkerBas
 import { baseResolutionStatePatch, formatBaseResolution, isMergeConflictRetry, markTerminalState, recoveryOrdinalFor, remoteTrackingBaseRef, resolveSpawnTier, timeoutNotes, timeoutReasonForEnvelope } from "./types.js";
 import { MECHANICAL_BLOCKER_KINDS, appendGoVerifyRetryHandoff, blockedLabelsIn, editIssueLifecycleLabels, formatNoSourceChangeWarning, hasLikelySourceChanges, parseFeedbackClass, refuseNoSandboxForUntrustedAuthor, resolveGoVerifyRetries, resolveUntrustedAuthorSandbox, scoutCapturedDone, scoutReportFrom, syncMainRedRepairIssue } from "./recovery.js";
 import { abortAfterClaim, claimLost, emitBackpressureReview, emitDone, handoffForManualLanding, handoffForReview, hookContext, isRunnerRecoverableOutcome, mergeFailed, ciBlocked, prLandingBlocked, trunkDivergedBlocked, sensitivePathGuarded, mainRedUntrackedBlocked, onErrorContext, parseHookEnv, postAttemptContext, recordAttemptBestEffort, reconcileInputFor, releaseOwnedClaim, runCascadeRebase, runCloseCascade, runnerRecoverable, terminalFailure, writeValidationSidecar, type StageCommon } from "./terminal.js";
+
+const CODEX_STREAM_HEARTBEAT_INTERVAL_MS = 60_000;
+
 export async function processIssue(
   deps: ProcessIssueDeps,
   input: ProcessIssueInput,
@@ -391,6 +394,37 @@ export async function processIssue(
           deps.recordAgentEvent?.(event);
         }
       : deps.recordAgentEvent;
+  let lastCodexStreamHeartbeatMs: number | undefined;
+  const fireProgressHeartbeat = (info: AttemptProgressInfo): void => {
+    const vitals = deps.heartbeatVitals?.();
+    void fireHook(
+      "on_heartbeat",
+      hookContext({
+        issue,
+        title: input.title,
+        workspace: branch,
+        runner: activeRunner,
+        attempt_n: attemptN,
+        ...(vitals ? { vitals } : {}),
+      }),
+    );
+    deps.emitHeartbeat?.({ ...info, base });
+  };
+  const agentEventSinkWithHeartbeat: typeof deps.recordAgentEvent = (event) => {
+    agentEventSink?.(event);
+    if (activeRunner !== "codex") return;
+    if (event.type === "raw" || event.type === "sessionId") return;
+    const nowMs = deps.nowEpoch() * 1000;
+    if (
+      event.type !== "usage" &&
+      lastCodexStreamHeartbeatMs !== undefined &&
+      nowMs - lastCodexStreamHeartbeatMs < CODEX_STREAM_HEARTBEAT_INTERVAL_MS
+    ) {
+      return;
+    }
+    lastCodexStreamHeartbeatMs = nowMs;
+    fireProgressHeartbeat({ head: undefined, lastProgressMs: nowMs, nowMs });
+  };
   const salvagedUncommittedNotes = (gate: "feedback" | "backpressure"): string => {
     const prefix =
       salvagedRunCommitCount === 0
@@ -439,21 +473,9 @@ export async function processIssue(
       base: baseRef,
       cwd: input.attemptDir,
       logPath: `${input.attemptDir}/afk.log`,
-      onAgentEvent: agentEventSink,
+      onAgentEvent: agentEventSinkWithHeartbeat,
       onHeartbeat: (info) => {
-        const vitals = deps.heartbeatVitals?.();
-        void fireHook(
-          "on_heartbeat",
-          hookContext({
-            issue,
-            title: input.title,
-            workspace: branch,
-            runner: activeRunner,
-            attempt_n: attemptN,
-            ...(vitals ? { vitals } : {}),
-          }),
-        );
-        deps.emitHeartbeat?.({ ...info, base });
+        fireProgressHeartbeat(info);
       },
       remote: input.remote,
       continuousPush: input.runMode !== "scout",
@@ -520,7 +542,7 @@ export async function processIssue(
         base,
         cwd: input.attemptDir,
         logPath: `${input.attemptDir}/afk.log`,
-        onAgentEvent: agentEventSink,
+        onAgentEvent: agentEventSinkWithHeartbeat,
         remote: input.remote,
         continuousPush: input.runMode !== "scout",
         goalProbe: () => deps.gh.issueClosed(issue),
