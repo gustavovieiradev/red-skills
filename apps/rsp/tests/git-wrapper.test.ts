@@ -83,6 +83,74 @@ describe("rsp git fidelity fixtures", () => {
     }
   });
 
+  it("parses short git status rows instead of fabricating a clean summary", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: [
+        "## feature/rsp...origin/feature/rsp",
+        " M apps/rsp/src/cli.ts",
+        "?? apps/rsp/src/git-wrapper.ts",
+        "R  old.txt -> new.txt",
+        "",
+      ].join("\n"),
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { branch: string; rows: Array<{ path: string; index: string; worktree: string; state: string }>; summary: string };
+
+    expect(result.status).toBe(0);
+    expect(decoded.branch).toBe("feature/rsp...origin/feature/rsp");
+    expect(decoded.rows).toEqual([
+      expect.objectContaining({ path: "apps/rsp/src/cli.ts", index: ".", worktree: "M", state: "modified" }),
+      expect.objectContaining({ path: "apps/rsp/src/git-wrapper.ts", index: "?", worktree: "?", state: "added" }),
+      expect.objectContaining({ path: "new.txt", index: "R", worktree: ".", state: "renamed" }),
+    ]);
+    expect(decoded.summary).toBe("3 changes: 1 added, 1 modified, 0 deleted");
+    expect(decoded.summary).not.toContain("clean");
+  });
+
+  it("parses -s git status rows with NUL separators", async () => {
+    const result = await renderGitContract(["git", "status", "-s"], {
+      stdout: "## feature/rsp\0A  added.txt\0",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { rows: Array<{ path: string; index: string; worktree: string; state: string }>; summary: string };
+
+    expect(decoded.rows).toEqual([
+      expect.objectContaining({ path: "added.txt", index: "A", worktree: ".", state: "added" }),
+    ]);
+    expect(decoded.summary).toBe("1 changes: 1 added, 0 modified, 0 deleted");
+  });
+
+  it("falls open to raw status output when non-empty stdout is unparseable", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "unclassified status line\n",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.toString("utf8")).toBe("unclassified status line\n");
+    expect(result.rawOutput?.toString("utf8")).toBe("unclassified status line\n");
+    expect(result.payload).toBeUndefined();
+    expect(result.degradation).toMatchObject({ reason: "git-status-unparsed", family: "git:status" });
+  });
+
+  it("keeps empty short git status output clean", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { category: string; empty: boolean; rows: unknown[]; summary: string };
+
+    expect(decoded).toMatchObject({ category: "no-op", empty: true, rows: [], summary: "git status clean: 0 changes" });
+  });
+
   it("mints a terse elision handle with the exact marker line and show can retrieve the original", async () => {
     const root = await tempRoot();
     const store = await RspElisionStore.open({ uri: `file://${join(root, "red.rdb")}` });
