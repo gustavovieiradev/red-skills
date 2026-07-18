@@ -2192,4 +2192,49 @@ describe("runAgent — forwards onHeartbeat to the guard tick", () => {
     const res = await p;
     expect(res.outcome).toBe("done");
   });
+
+  it("pokes the heartbeat cadence from stream activity during a long codex iteration", async () => {
+    let clock = 0;
+    const sched = manualScheduler();
+    const ticks: AttemptProgressInfo[] = [];
+    const heartbeatSawRecordedActivity: boolean[] = [];
+    let streamEvent: ((event: AgentStreamEvent) => void) | undefined;
+    let resolveRun: ((r: RunResult) => void) | undefined;
+    let sawText = false;
+    const deps: SandcastleDeps = {
+      ...makeDeps(
+        (o) =>
+          new Promise<RunResult>((res) => {
+            streamEvent = o.logging?.type === "file" ? o.logging.onAgentStreamEvent : undefined;
+            resolveRun = res;
+          }),
+      ),
+      now: () => clock,
+      schedule: sched.schedule,
+      makeAbortController: () => new AbortController(),
+    };
+    const p = runAgent(deps, {
+      ...baseInput,
+      runner: "codex",
+      model: "gpt-test",
+      attemptTimeoutSeconds: 600,
+      logPath: "/tmp/afk.log",
+      headProbe: async () => "static",
+      onAgentEvent: (event) => {
+        if (event.type === "text") sawText = true;
+      },
+      onHeartbeat: (i) => {
+        ticks.push(i);
+        heartbeatSawRecordedActivity.push(sawText);
+      },
+    });
+    clock = 60_000;
+    streamEvent?.({ type: "text", iteration: 1, message: "still working", timestamp: new Date(60_000) });
+    await flush();
+    expect(ticks).toHaveLength(1);
+    expect(heartbeatSawRecordedActivity).toEqual([true]);
+    resolveRun?.(fakeResult({ completionSignal: DONE_SIGNAL, stdout: "ok\n<promise>DONE</promise>" }));
+    const res = await p;
+    expect(res.outcome).toBe("done");
+  });
 });
