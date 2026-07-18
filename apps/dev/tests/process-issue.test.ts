@@ -3452,6 +3452,92 @@ describe("processIssue — emitHeartbeat receives resolved base (issue #570)", (
     expect(heartbeatInfos).toHaveLength(1);
     expect(heartbeatInfos[0]?.base).toBe("main");
   });
+
+  it("emits codex progress heartbeats from stream events during a single long iteration", async () => {
+    const heartbeatInfos: AttemptProgressInfo[] = [];
+    let now = 1000;
+    const { deps, input } = harness({ outcome: "done", feedbackOk: true });
+    input.runner = "codex";
+    const customDeps: ProcessIssueDeps = {
+      ...deps,
+      nowEpoch: () => now,
+      emitHeartbeat: (info) => heartbeatInfos.push(info),
+      runAgent: async (ri) => {
+        ri.onAgentEvent?.({ type: "toolCall", name: "read", formattedArgs: "src/a.ts", iteration: 1, timestamp: new Date(now * 1000) });
+        now += 59;
+        ri.onAgentEvent?.({ type: "text", message: "still working", iteration: 1, timestamp: new Date(now * 1000) });
+        now += 1;
+        ri.onAgentEvent?.({ type: "text", message: "more work", iteration: 1, timestamp: new Date(now * 1000) });
+        return {
+          outcome: "done",
+          branch: ri.branch,
+          commits: [{ sha: "deadbee" }],
+          completionSignal: "<promise>DONE</promise>",
+          stdout: "",
+        };
+      },
+    };
+    await processIssue(customDeps, input);
+    expect(heartbeatInfos).toHaveLength(2);
+    expect(heartbeatInfos.map((i) => i.base)).toEqual(["main", "main"]);
+    expect(heartbeatInfos.map((i) => i.nowMs)).toEqual([1000_000, 1060_000]);
+  });
+
+  it("does not add stream-event heartbeats for claude", async () => {
+    const heartbeatInfos: AttemptProgressInfo[] = [];
+    const { deps, input } = harness({ outcome: "done", feedbackOk: true });
+    const customDeps: ProcessIssueDeps = {
+      ...deps,
+      emitHeartbeat: (info) => heartbeatInfos.push(info),
+      runAgent: async (ri) => {
+        ri.onAgentEvent?.({ type: "toolCall", name: "read", formattedArgs: "src/a.ts", iteration: 1, timestamp: new Date(0) });
+        ri.onAgentEvent?.({ type: "text", message: "still working", iteration: 1, timestamp: new Date(0) });
+        return {
+          outcome: "done",
+          branch: ri.branch,
+          commits: [{ sha: "deadbee" }],
+          completionSignal: "<promise>DONE</promise>",
+          stdout: "",
+        };
+      },
+    };
+    await processIssue(customDeps, input);
+    expect(heartbeatInfos).toEqual([]);
+  });
+
+  it("flushes codex usage events even inside the stream heartbeat cadence", async () => {
+    const heartbeatInfos: AttemptProgressInfo[] = [];
+    let now = 1000;
+    const { deps, input } = harness({ outcome: "done", feedbackOk: true });
+    input.runner = "codex";
+    const customDeps: ProcessIssueDeps = {
+      ...deps,
+      nowEpoch: () => now,
+      emitHeartbeat: (info) => heartbeatInfos.push(info),
+      runAgent: async (ri) => {
+        ri.onAgentEvent?.({ type: "text", message: "working", iteration: 1, timestamp: new Date(now * 1000) });
+        now += 10;
+        ri.onAgentEvent?.({
+          type: "usage",
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          iteration: 1,
+          timestamp: new Date(now * 1000),
+        });
+        return {
+          outcome: "done",
+          branch: ri.branch,
+          commits: [{ sha: "deadbee" }],
+          completionSignal: "<promise>DONE</promise>",
+          stdout: "",
+        };
+      },
+    };
+    await processIssue(customDeps, input);
+    expect(heartbeatInfos.map((i) => i.nowMs)).toEqual([1000_000, 1010_000]);
+  });
 });
 
 describe("processIssue — new lifecycle checkpoints (#832)", () => {
