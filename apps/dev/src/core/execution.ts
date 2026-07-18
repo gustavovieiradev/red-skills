@@ -1094,6 +1094,11 @@ export function startAttemptGuard(opts: {
   const cancel = opts.schedule(() => {
     void (async () => {
       if (fired) return;
+      // Externalized proof-of-life must not wait behind the async guard probes.
+      // A long codex iteration can leave the worker with one in-flight agent
+      // call for minutes; if a same-poll probe stalls, placing the heartbeat at
+      // the tail suppresses loc/activity telemetry for the whole interval.
+      opts.onTick?.({ head: lastHead, lastProgressMs: lastProgress, nowMs: opts.now() });
       // Goal predicate (ADR 0057): rides THIS poll — one issue-state read per
       // tick, no separate loop. A definite CLOSED means the attempt's goal is
       // already reflected in the world (someone landed it, or our own merge), so
@@ -1137,7 +1142,6 @@ export function startAttemptGuard(opts: {
             usage.inputTokens +
             usage.outputTokens +
             usage.toolsCalled +
-            usage.waiting +
             (usage.textChunks ?? 0) +
             (usage.reasoningCount ?? 0);
         } catch {
@@ -1210,7 +1214,6 @@ export function startAttemptGuard(opts: {
         diffHighWater = diffHighWater === undefined ? volume : Math.max(diffHighWater, volume);
       }
       if (activityScore !== undefined) lastActivityScore = activityScore;
-      opts.onTick?.({ head: head ?? lastHead, lastProgressMs: lastProgress, nowMs: opts.now() });
     })();
   }, opts.intervalMs);
   return {
