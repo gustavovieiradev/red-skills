@@ -7,6 +7,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { connect, type RedDB } from "@reddb-io/sdk";
+import { decodeSnapshotDocument, encodeSnapshotToon } from "@reddb-io/shared/toon-migration.js";
 import { DEFAULT_RSP_BYTE_BUDGET, DEFAULT_RSP_EPHEMERAL_TTL_HOURS, DEFAULT_RSP_TTL_DAYS } from "./config.js";
 
 export const RSP_ELISION_COLLECTION = "rsp_elisions_v1";
@@ -1338,7 +1339,7 @@ async function readStoreDocument(path: string): Promise<StoreDocument> {
   try {
     const text = await readFile(path, "utf8");
     if (text.trim() === "") return emptyStoreDocument();
-    const parsed = JSON.parse(text) as unknown;
+    const parsed = decodeStoreDocumentSnapshot(text);
     if (isStoreDocument(parsed)) return { ...parsed, blobs: parsed.blobs ?? {} };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -1397,8 +1398,25 @@ export async function ensureReddbBinaryFromWarmCache(): Promise<void> {
 async function writeStoreDocument(path: string, document: StoreDocument): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(document)}\n`, "utf8");
+  await writeFile(tmp, `${encodeStoreDocumentSnapshot(document)}\n`, "utf8");
   await rename(tmp, path);
+}
+
+function encodeStoreDocumentSnapshot(document: StoreDocument): string {
+  return encodeSnapshotToon({ document_json: JSON.stringify(document) });
+}
+
+function decodeStoreDocumentSnapshot(text: string): unknown {
+  const decoded = decodeSnapshotDocument(text);
+  if (
+    decoded &&
+    typeof decoded === "object" &&
+    !Array.isArray(decoded) &&
+    typeof (decoded as { document_json?: unknown }).document_json === "string"
+  ) {
+    return JSON.parse((decoded as { document_json: string }).document_json) as unknown;
+  }
+  return decoded;
 }
 
 function emptyStoreDocument(): StoreDocument {
