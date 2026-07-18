@@ -83,6 +83,66 @@ describe("rsp git fidelity fixtures", () => {
     }
   });
 
+  it("parses short git status rows instead of reporting a dirty tree as clean", async () => {
+    const recorded = {
+      stdout: [
+        "## feature/rsp",
+        " M apps/rsp/src/cli.ts",
+        "?? apps/rsp/src/new-file.ts",
+        "R  old.txt -> renamed.txt",
+        "",
+      ].join("\0"),
+      stderr: "",
+      status: 0,
+      signal: null,
+    };
+
+    for (const command of [["git", "status", "--short"], ["git", "status", "-s"]]) {
+      const result = await renderGitContract(command, recorded, { level: "lossless" });
+      const decoded = decode(result.stdout.toString("utf8")) as {
+        branch: string;
+        rows: Array<{ path: string; index: string; worktree: string; state: string }>;
+        summary: string;
+      };
+
+      expect(decoded.branch).toBe("feature/rsp");
+      expect(decoded.rows).toEqual([
+        { path: "apps/rsp/src/cli.ts", index: ".", worktree: "M", state: "modified" },
+        { path: "apps/rsp/src/new-file.ts", index: "?", worktree: "?", state: "added" },
+        { path: "old.txt -> renamed.txt", index: "R", worktree: ".", state: "renamed" },
+      ]);
+      expect(decoded.summary).toBe("3 changes: 1 added, 1 modified, 0 deleted");
+      expect(decoded.summary).not.toContain("clean");
+    }
+  });
+
+  it("passes through non-empty unparseable status output instead of synthesizing clean", async () => {
+    const stdout = "unexpected status layout with real bytes\n";
+    const result = await renderGitContract(["git", "status", "--porcelain"], {
+      stdout,
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+
+    expect(result.stdout).toEqual(Buffer.from(stdout));
+    expect(result.rawOutput).toEqual(Buffer.from(stdout));
+    expect(result.degradation).toMatchObject({ reason: "git-status-unparsed-output", family: "git status" });
+  });
+
+  it("still summarizes an empty status stdout as clean", async () => {
+    const result = await renderGitContract(["git", "status", "--short"], {
+      stdout: "",
+      stderr: "",
+      status: 0,
+      signal: null,
+    }, { level: "lossless" });
+    const decoded = decode(result.stdout.toString("utf8")) as { summary: string; rows: unknown[] };
+
+    expect(decoded.summary).toBe("git status clean: 0 changes");
+    expect(decoded.rows).toEqual([]);
+  });
+
   it("mints a terse elision handle with the exact marker line and show can retrieve the original", async () => {
     const root = await tempRoot();
     const store = await RspElisionStore.open({ uri: `file://${join(root, "red.rdb")}` });
