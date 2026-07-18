@@ -1,8 +1,9 @@
 # AFK Fleet Mode — running `afk fleet` (multi-worker supervisor)
 
-This file serves the `afk fleet` branch: launching, stopping, and supervising `N`
-concurrent `run` workers on one checkout. Reached from *When To Use*
-(`/afk fleet [N]`, `/afk fleet stop`) in [`SKILL.md`](./SKILL.md).
+This file serves the `afk fleet` branch: launching, stopping, supervising, and
+reading logs for `N` concurrent `run` workers on one checkout. Reached from
+*When To Use* (`/afk fleet [N]`, `/afk fleet stop`, `/afk fleet logs ...`) in
+[`SKILL.md`](./SKILL.md).
 
 ## Fleet Mode (runner-portable — binding)
 
@@ -21,6 +22,21 @@ Fleet mode is **runner-portable**: the supervisor is plain process orchestration
 - Claude Code: launch fleet. For manual monitoring, run `/dev:afk monitor` or tail `.red/tmp/supervisors/default/supervisor.log.toonl`.
 - Codex: launch fleet with `RED_AFK_RUNNER=codex` and spawn one read-only Codex monitor agent from the bundle's `codex-monitor-agent --mode fleet` prompt when a sub-agent primitive is available. If no sub-agent primitive is available, launch fleet anyway and print `monitor loop unavailable in this runner; run /dev:afk monitor or tail .red/tmp/supervisors/default/supervisor.log.toonl manually.`
 - Bare terminal / unknown runner: launch fleet and print the manual-monitor guidance.
+
+### `/dev:afk fleet logs` — local structured log reader
+
+`fleet logs` is read-only and local-only (ADR 0084). It reads the castle lanes
+under `.red/tmp/`, decodes their structured TOONL records, and renders human
+prose on stdout instead of exposing raw lane bytes.
+
+- `/dev:afk fleet logs --supervisor` renders
+  `.red/tmp/supervisors/default/supervisor.log.toonl`.
+- `/dev:afk fleet logs --worker <id>` renders one worker's
+  `.red/tmp/workers/<id>/worker.log.toonl`.
+- `/dev:afk fleet logs --all` reads every worker lane and merges the records by
+  timestamp, prefixing every rendered line with `[<worker-id>]`.
+- Add `--follow` or `-f` to keep polling the selected local lanes and stream
+  newly appended records live.
 
 **Release recycle rule.** A fleet supervisor keeps running the exact dev bundle
 version it was launched from. After any RedSkills release that changes AFK or
