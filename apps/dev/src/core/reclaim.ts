@@ -17,7 +17,7 @@ import { LABEL_HUMAN, LABEL_RUNNING } from "./triage-labels.js";
 export const ORPHAN_TTL_LONG_S = 7 * 86400;
 export const ORPHAN_TTL_SHORT_S = 1 * 86400;
 
-/** Attempt-cap defaults retained only for legacy-dir cleanup. */
+/** Attempt-cap defaults retained for bounded worker-dir cleanup. */
 export const DEFAULT_ATTEMPT_TTL_S = 14 * 86400;
 export const DEFAULT_ATTEMPT_KEEP = 5;
 
@@ -98,7 +98,7 @@ export function decideOrphanFate(input: OrphanInput): OrphanFate {
 /** One stat'd attempt dir for a single issue. `live` is the caller's resolution
  * of _attempt_dir_is_live (state file carrying a live pid). */
 export interface AttemptDir {
-  /** Absolute attempt dir path under workers/{wid}/{N}-a{attempt}. */
+  /** Absolute worker issue dir path under workers/{wid}/{N}. */
   path: string;
   /** mtime in seconds. */
   mtimeS: number;
@@ -121,8 +121,8 @@ export interface AttemptCapOptions {
  *      removed.
  *   2. Age cap: any non-live dir with (now - mtime) > ttlS is reclaimed; the
  *      rest survive to the count cap.
- *   3. Count cap: of the age-cap survivors, keep the newest `keep` by attempt
- *      number and reclaim the oldest rest.
+ *   3. Count cap: of the age-cap survivors, keep the newest `keep` by mtime
+ *      and reclaim the oldest rest.
  * Dirs whose path does not parse under the nested layout are ignored. Returns
  * the reclaimed dirs (age-capped first, then count-capped) — purely a plan; no
  * filesystem effect. */
@@ -134,29 +134,29 @@ export function planAttemptCap(
   const keep = opts.keep;
   const nowS = opts.nowS;
 
-  // Parse + drop live + drop unparseable, carrying the attempt number along.
-  const candidates: Array<{ dir: AttemptDir; attempt: number }> = [];
+  // Parse + drop live + drop unparseable.
+  const candidates: AttemptDir[] = [];
   for (const dir of attemptsForIssue) {
     if (dir.live) continue;
     const parsed = parseWorkerAttemptPath(dir.path);
     if (!parsed) continue;
-    candidates.push({ dir, attempt: parsed.attempt });
+    candidates.push(dir);
   }
 
   const reaped: AttemptDir[] = [];
 
   // Age cap: drop anything older than the TTL; the rest survive to the count cap.
-  const survivors: Array<{ dir: AttemptDir; attempt: number }> = [];
+  const survivors: AttemptDir[] = [];
   for (const c of candidates) {
-    if (nowS - c.dir.mtimeS > ttlS) reaped.push(c.dir);
+    if (nowS - c.mtimeS > ttlS) reaped.push(c);
     else survivors.push(c);
   }
 
-  // Count cap: keep the newest `keep` by attempt number, drop the oldest rest.
+  // Count cap: keep the newest `keep` by mtime, drop the oldest rest.
   if (survivors.length > keep) {
-    const byAttempt = [...survivors].sort((a, b) => a.attempt - b.attempt);
+    const byAge = [...survivors].sort((a, b) => a.mtimeS - b.mtimeS || a.path.localeCompare(b.path));
     const dropN = survivors.length - keep;
-    for (let i = 0; i < dropN; i++) reaped.push(byAttempt[i]!.dir);
+    for (let i = 0; i < dropN; i++) reaped.push(byAge[i]!);
   }
 
   return reaped;
@@ -168,7 +168,7 @@ export function planAttemptCap(
  * already resolved the OWNING worker's `worker.pid` liveness and the issue's
  * preservation state. */
 export interface LivenessReclaimInput {
-  /** Absolute attempt dir path (`.../workers/{wid}/{N}-a{n}`). */
+  /** Absolute worker issue dir path (`.../workers/{wid}/{N}`). */
   attemptDir: string;
   /** Absolute path of the attempt's heavy `worktree/`. */
   worktreePath: string;
