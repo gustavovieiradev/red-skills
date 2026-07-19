@@ -259,13 +259,12 @@ async function collectWorkerState(cwd: string, issue: number): Promise<RetakeWor
   const rec = matches[0];
   if (rec === undefined) return undefined;
   const current = rec.state.current;
-  const attemptMatch = /-a([0-9]+)$/.exec(dirname(rec.path));
   const lastExitCode = Number((current as Record<string, unknown>).last_exit_code);
   return {
     path: rec.path,
     attemptDir: dirname(rec.path),
     issue,
-    attempt: attemptMatch?.[1] ? Number.parseInt(attemptMatch[1], 10) : undefined,
+    attempt: 1,
     phase: typeof current.phase === "string" ? current.phase : undefined,
     outcome: typeof (current as Record<string, unknown>).outcome === "string"
       ? String((current as Record<string, unknown>).outcome)
