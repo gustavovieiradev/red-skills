@@ -81,7 +81,7 @@ export function parseWorkerIdsFromLog(path: string): string[] {
   return out;
 }
 
-/** Every attempt dir (`workers/{wid}/{issue}-a{n}`) for a worker, absolute
+/** Every issue dir (`workers/{wid}/{issue}`) for a worker, absolute
  * paths. Mirrors iter_dirs_for_worker. Missing worker dir → []. */
 export function iterDirsForWorker(root: string, wid: string): string[] {
   const wdir = workerDir(root, wid);
@@ -308,11 +308,7 @@ export function resolveIterDirInfo(
   const notes = tailFile(join(dir, "handoff.md"), 200);
   const logTail = tailFile(join(dir, "afk.log"), 50);
 
-  // Real attempt number from the `<issue>-a<N>` iter dir, for the bounded stalled
-  // re-claim cap (#402). Degrades to attempt 1 when the path is non-canonical.
-  const attempt = parseWorkerAttemptPath(dir)?.attempt ?? 1;
-
-  return { path: dir, issue, workerId, branch, logTail, notes, durationS, attempt };
+  return { path: dir, issue, workerId, branch, logTail, notes, durationS, attempt: 1 };
 }
 
 /**
