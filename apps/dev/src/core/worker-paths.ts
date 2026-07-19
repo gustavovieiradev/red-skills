@@ -1,6 +1,7 @@
 export interface WorkerAttemptIdentity {
   worker: string;
   issue: number;
+  /** ADR 0103 removed path-level attempts; retained as a compatibility value. */
   attempt: number;
 }
 
@@ -75,17 +76,17 @@ export function parseWorkerAttemptPath(path: string): WorkerAttemptIdentity | nu
   const normalized = path.replace(/\/$/, "");
   // Accept every worker-lane segment so a parked-attempt path reverses
   // regardless of which lane minted it.
-  const match = normalized.match(/(?:^|\/)(?:workers|go-workers|scout-workers)\/([^/]+)\/([1-9][0-9]*)(?:-a([1-9][0-9]*))?$/);
+  const match = normalized.match(/(?:^|\/)(?:workers|go-workers|scout-workers)\/([^/]+)\/([1-9][0-9]*)$/);
   if (!match) return null;
-  const [, worker, issue, attempt] = match;
+  const [, worker, issue] = match;
   if (!isValidWorkerId(worker)) return null;
-  return { worker, issue: Number(issue), attempt: attempt ? Number(attempt) : 1 };
+  return { worker, issue: Number(issue), attempt: 1 };
 }
 
 export function issueAttemptsGlob(root: string, issueValue: string | number): string {
   if (!root) throw new Error("root is required");
   const issue = asPositiveInteger(issueValue, "issue");
-  return `${normalizeRoot(root)}/${workersSegment()}/*/${issue}*`;
+  return `${normalizeRoot(root)}/${workersSegment()}/*/${issue}`;
 }
 
 export function workersGlob(root: string): string {
