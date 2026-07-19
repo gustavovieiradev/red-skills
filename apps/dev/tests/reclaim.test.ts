@@ -95,89 +95,88 @@ describe("decideOrphanFate", () => {
   });
 });
 
-/** Build an attempt dir fixture under the nested layout for issue 42. */
-function attempt(num: number, ageS: number, live = false): AttemptDir {
-  return { path: `/root/workers/wAAA/42-a${num}`, mtimeS: NOW - ageS, live };
+/** Build an issue-dir fixture under the nested worker layout. */
+function attempt(worker: string, ageS: number, live = false): AttemptDir {
+  return { path: `/root/workers/${worker}/42`, mtimeS: NOW - ageS, live };
 }
 
 describe("planAttemptCap", () => {
   it("reaps attempts older than the age cap, keeps the rest", () => {
     const attempts: AttemptDir[] = [
-      attempt(1, 20 * DAY),
-      attempt(2, 16 * DAY),
-      attempt(3, 1 * DAY),
+      attempt("wAAA", 20 * DAY),
+      attempt("wBBB", 16 * DAY),
+      attempt("wCCC", 1 * DAY),
     ];
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 5, nowS: NOW });
     expect(reaped.map((a) => a.path)).toEqual([
-      "/root/workers/wAAA/42-a1",
-      "/root/workers/wAAA/42-a2",
+      "/root/workers/wAAA/42",
+      "/root/workers/wBBB/42",
     ]);
   });
 
-  it("reaps the oldest-by-attempt-number over the count cap, keeping the newest KEEP", () => {
+  it("reaps the oldest-by-mtime over the count cap, keeping the newest KEEP", () => {
     const attempts: AttemptDir[] = [
-      attempt(1, 1 * DAY),
-      attempt(2, 1 * DAY),
-      attempt(3, 1 * DAY),
-      attempt(4, 1 * DAY),
+      attempt("wAAA", 4 * DAY),
+      attempt("wBBB", 3 * DAY),
+      attempt("wCCC", 2 * DAY),
+      attempt("wDDD", 1 * DAY),
     ];
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 2, nowS: NOW });
-    // Keep a3, a4 (newest two by attempt number); drop a1, a2.
+    // Keep the newest two by mtime; drop the oldest two.
     expect(reaped.map((a) => a.path)).toEqual([
-      "/root/workers/wAAA/42-a1",
-      "/root/workers/wAAA/42-a2",
+      "/root/workers/wAAA/42",
+      "/root/workers/wBBB/42",
     ]);
   });
 
-  it("count cap ranks by attempt number, not mtime", () => {
-    // a4 is the oldest on disk but the newest attempt number → it survives.
+  it("count cap ranks by mtime, not worker id", () => {
     const attempts: AttemptDir[] = [
-      attempt(1, 1 * DAY),
-      attempt(2, 2 * DAY),
-      attempt(3, 3 * DAY),
-      attempt(4, 10 * DAY),
+      attempt("wAAA", 1 * DAY),
+      attempt("wBBB", 2 * DAY),
+      attempt("wCCC", 3 * DAY),
+      attempt("wDDD", 10 * DAY),
     ];
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 2, nowS: NOW });
     expect(reaped.map((a) => a.path)).toEqual([
-      "/root/workers/wAAA/42-a1",
-      "/root/workers/wAAA/42-a2",
+      "/root/workers/wDDD/42",
+      "/root/workers/wCCC/42",
     ]);
   });
 
   it("applies age and count caps together — age first, count over the survivors", () => {
     const attempts: AttemptDir[] = [
-      attempt(1, 20 * DAY), // over age cap → reaped by age
-      attempt(2, 1 * DAY),
-      attempt(3, 1 * DAY),
-      attempt(4, 1 * DAY),
+      attempt("wAAA", 20 * DAY), // over age cap → reaped by age
+      attempt("wBBB", 3 * DAY),
+      attempt("wCCC", 2 * DAY),
+      attempt("wDDD", 1 * DAY),
     ];
-    // After age cull, survivors are a2,a3,a4; keep=2 → drop a2.
+    // After age cull, three survivors remain; keep=2 → drop the oldest survivor.
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 2, nowS: NOW });
     expect(reaped.map((a) => a.path)).toEqual([
-      "/root/workers/wAAA/42-a1",
-      "/root/workers/wAAA/42-a2",
+      "/root/workers/wAAA/42",
+      "/root/workers/wBBB/42",
     ]);
   });
 
   it("never counts or removes a live attempt", () => {
     const attempts: AttemptDir[] = [
-      attempt(1, 20 * DAY, true), // live AND over age cap → still spared
-      attempt(2, 1 * DAY),
-      attempt(3, 1 * DAY),
-      attempt(4, 1 * DAY, true), // live → excluded from the count too
+      attempt("wAAA", 20 * DAY, true), // live AND over age cap → still spared
+      attempt("wBBB", 1 * DAY),
+      attempt("wCCC", 1 * DAY),
+      attempt("wDDD", 1 * DAY, true), // live → excluded from the count too
     ];
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 2, nowS: NOW });
-    // Live a1/a4 excluded entirely. Non-live survivors a2,a3 fit under keep=2.
+    // Live workers are excluded entirely. The two non-live survivors fit under keep=2.
     expect(reaped).toEqual([]);
   });
 
   it("a live attempt does not consume a keep slot", () => {
     const attempts: AttemptDir[] = [
-      attempt(1, 1 * DAY),
-      attempt(2, 1 * DAY),
-      attempt(3, 1 * DAY, true), // live, not counted
+      attempt("wAAA", 1 * DAY),
+      attempt("wBBB", 1 * DAY),
+      attempt("wCCC", 1 * DAY, true), // live, not counted
     ];
-    // Non-live a1,a2 under keep=2 → nothing reaped, even though there are 3 dirs.
+    // Two non-live worker issue dirs under keep=2 → nothing reaped, even though there are 3 dirs.
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 2, nowS: NOW });
     expect(reaped).toEqual([]);
   });
@@ -185,14 +184,14 @@ describe("planAttemptCap", () => {
   it("ignores attempt dirs whose path does not parse under the nested layout", () => {
     const attempts: AttemptDir[] = [
       { path: "/root/garbage/not-an-attempt", mtimeS: NOW - 20 * DAY, live: false },
-      attempt(1, 20 * DAY),
+      attempt("wAAA", 20 * DAY),
     ];
     const reaped = planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 5, nowS: NOW });
-    expect(reaped.map((a) => a.path)).toEqual(["/root/workers/wAAA/42-a1"]);
+    expect(reaped.map((a) => a.path)).toEqual(["/root/workers/wAAA/42"]);
   });
 
   it("returns nothing when every attempt is within both caps", () => {
-    const attempts: AttemptDir[] = [attempt(1, 1 * DAY), attempt(2, 2 * DAY)];
+    const attempts: AttemptDir[] = [attempt("wAAA", 1 * DAY), attempt("wBBB", 2 * DAY)];
     expect(planAttemptCap(attempts, { ttlS: 14 * DAY, keep: 5, nowS: NOW })).toEqual([]);
   });
 });
@@ -200,8 +199,8 @@ describe("planAttemptCap", () => {
 // issue #1219 PART 4: liveness-gated read-time reclaim planner.
 describe("planLivenessReclaim (issue #1219)", () => {
   const input = (over: Partial<LivenessReclaimInput>): LivenessReclaimInput => ({
-    attemptDir: "/r/.red/tmp/workers/wA/5-a1",
-    worktreePath: "/r/.red/tmp/workers/wA/5-a1/worktree",
+    attemptDir: "/r/.red/tmp/workers/wA/5",
+    worktreePath: "/r/.red/tmp/workers/wA/5/worktree",
     workerPidAlive: false,
     preserved: false,
     ...over,
@@ -225,9 +224,9 @@ describe("planLivenessReclaim (issue #1219)", () => {
 
   it("keeps a live worker's dir while reclaiming a sibling dead worker", () => {
     const actions = planLivenessReclaim([
-      input({ attemptDir: "/r/.red/tmp/workers/wLIVE/5-a1", workerPidAlive: true }),
-      input({ attemptDir: "/r/.red/tmp/go-workers/wDEAD/6-a1", workerPidAlive: false, preserved: false }),
+      input({ attemptDir: "/r/.red/tmp/workers/wLIVE/5", workerPidAlive: true }),
+      input({ attemptDir: "/r/.red/tmp/go-workers/wDEAD/6", workerPidAlive: false, preserved: false }),
     ]);
-    expect(actions.map((a) => a.attemptDir)).toEqual(["/r/.red/tmp/go-workers/wDEAD/6-a1"]);
+    expect(actions.map((a) => a.attemptDir)).toEqual(["/r/.red/tmp/go-workers/wDEAD/6"]);
   });
 });
