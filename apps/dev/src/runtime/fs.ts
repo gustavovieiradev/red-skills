@@ -416,7 +416,7 @@ async function reapDeadEmptyWorkerShellsInRoot(workersRoot: string): Promise<Dea
         continue;
       }
 
-      if (!/^[1-9][0-9]*-a[1-9][0-9]*$/.test(entry)) {
+      if (!/^[1-9][0-9]*$/.test(entry)) {
         removable = false;
         break;
       }
