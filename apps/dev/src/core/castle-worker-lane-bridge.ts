@@ -41,11 +41,6 @@ function currentIssue(state: AfkState): number | undefined {
   return undefined;
 }
 
-function currentAttempt(attemptDir: string): number | undefined {
-  const match = /-a([1-9][0-9]*)$/.exec(attemptDir);
-  return match ? Number(match[1]) : undefined;
-}
-
 function compactCurrent(state: AfkState): Record<string, unknown> {
   return {
     ...state.current,
@@ -105,19 +100,16 @@ export function createCastleWorkerLaneBridge(
     const attemptDir = options.attemptDir();
     const state = readAttemptState(attemptDir);
     const issue = state ? currentIssue(state) : undefined;
-    const attempt = currentAttempt(attemptDir);
     await writers.worker(options.workerId).append({
       kind: kind as CastleLaneKind,
       worker_id: options.workerId,
       issue,
-      attempt,
       payload,
     });
     await writers.liveness(options.workerId).append({
       kind: "worker.heartbeat",
       worker_id: options.workerId,
       issue,
-      attempt,
       payload: { signal: kind },
     });
     if (attemptDir) {
