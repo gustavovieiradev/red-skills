@@ -3,18 +3,17 @@ import { join } from "node:path";
 import { isPositiveIntegerToken, isValidWorkerId, parseWorkerAttemptPath } from "./worker-paths.js";
 
 /**
- * attempt-ledger — derive the next attempt number and assemble the
- * restart-informed context for a new AFK attempt.
+ * attempt-ledger — assemble restart-informed context for a new AFK run.
  *
  * Every AFK attempt lives on disk under the attempt-first tree owned by
  * worker-paths:
  *
- *   <root>/workers/<worker>/<issue>-a<attempt>/
+ *   <root>/workers/<worker>/<issue>/
  *
  * This module is the FS-enumeration consumer of worker-paths: worker-paths owns
  * the path *grammar* (build/parse, never touching disk); this module walks the
  * real attempt tree and reuses `parseWorkerAttemptPath` to interpret each hit.
- * The numbering logic is a pure function over a list of attempt-dir basenames;
+ * The directory matching logic is a pure function over worker-dir basenames;
  * the directory globbing is a thin injectable reader.
  *
  * Per-attempt outcome contract (read-only here): an attempt directory MAY carry
@@ -64,11 +63,10 @@ export interface AttemptContext {
 }
 
 /**
- * Pure numbering core: given the attempt-dir basenames for every worker and the
- * target issue, return the highest existing attempt and its directory path.
- * Non-matching basenames (wrong issue, non-numeric suffix) are ignored, so junk
- * entries never bump the counter. The selection is numeric, not lexical. Returns
- * null when no valid prior attempt exists for the issue.
+ * Given the worker-dir basenames for every worker and the target issue, return
+ * one matching issue dir and its path. Non-matching basenames are ignored, so
+ * junk entries never count as previous context. Returns null when no valid
+ * prior run exists for the issue.
  */
 export function highestAttempt(
   root: string,
@@ -81,8 +79,8 @@ export function highestAttempt(
     for (const basename of entry.basenames) {
       const parsed = parseWorkerAttemptPath(`workers/${entry.worker}/${basename}`);
       if (!parsed || parsed.issue !== issue) continue;
-      if (!best || parsed.attempt > best.attempt) {
-        best = { attempt: parsed.attempt, dir: join(root, "workers", entry.worker, basename) };
+      if (!best) {
+        best = { attempt: 1, dir: join(root, "workers", entry.worker, basename) };
       }
     }
   }
