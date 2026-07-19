@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { RunOptions } from "@reddb-io/red-castle";
 import {
   buildRunOptions,
   buildContinuousPushHook,
@@ -35,6 +36,7 @@ import {
   type AttemptBudgetUsage,
   type AgentStreamEvent,
   type AttemptProgressInfo,
+  type SandcastleDeps,
 } from "../src/core/execution.js";
 
 import {
