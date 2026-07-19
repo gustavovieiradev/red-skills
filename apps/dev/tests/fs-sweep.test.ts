@@ -10,6 +10,7 @@ import {
   listOrphanDirs,
   removeDir,
   reapDeadEmptyWorkerShells,
+  completionSweep,
 } from "../src/runtime/fs.js";
 
 function scratch(): string {
@@ -314,7 +315,7 @@ describe("listOrphanDirs (#444 — skip live siblings)", () => {
   it("returns a dead worker's attempt dir as an orphan", async () => {
     const root = scratch();
     try {
-      const att = join(root, "wDEAD", "190-a1");
+      const att = join(root, "wDEAD", "190");
       mkdirSync(att, { recursive: true });
       writeFileSync(join(root, "wDEAD", "worker.pid"), DEAD_PID);
       const orphans = await listOrphanDirs(root, Math.floor(Date.now() / 1000));
@@ -328,7 +329,7 @@ describe("listOrphanDirs (#444 — skip live siblings)", () => {
   it("treats a worker with no worker.pid as dead (its attempts are orphans)", async () => {
     const root = scratch();
     try {
-      const att = join(root, "wNOPID", "7-a1");
+      const att = join(root, "wNOPID", "7");
       mkdirSync(att, { recursive: true });
       const orphans = await listOrphanDirs(root, Math.floor(Date.now() / 1000));
       expect(orphans.map((o) => o.path)).toEqual([att]);
@@ -340,15 +341,36 @@ describe("listOrphanDirs (#444 — skip live siblings)", () => {
   it("SKIPS a LIVE worker's attempt dirs — never reaps a live sibling", async () => {
     const root = scratch();
     try {
-      const live = join(root, "wLIVE", "363-a1");
+      const live = join(root, "wLIVE", "363");
       mkdirSync(live, { recursive: true });
       writeFileSync(join(root, "wLIVE", "worker.pid"), ALIVE_PID);
       // a dead sibling alongside the live one is still collected
-      const dead = join(root, "wDEAD", "9-a1");
+      const dead = join(root, "wDEAD", "9");
       mkdirSync(dead, { recursive: true });
       writeFileSync(join(root, "wDEAD", "worker.pid"), DEAD_PID);
       const orphans = await listOrphanDirs(root, Math.floor(Date.now() / 1000));
       expect(orphans.map((o) => o.path)).toEqual([dead]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("completionSweep", () => {
+  it("removes completed worker issue dirs without matching legacy attempt suffixes", async () => {
+    const root = scratch();
+    try {
+      const current = join(root, "wDONE", "42");
+      const legacy = join(root, "wDONE", "42-a1");
+      const sibling = join(root, "wDONE", "43");
+      mkdirSync(current, { recursive: true });
+      mkdirSync(legacy, { recursive: true });
+      mkdirSync(sibling, { recursive: true });
+
+      expect(await completionSweep(root, 42)).toEqual([current]);
+      expect(existsSync(current)).toBe(false);
+      expect(existsSync(legacy)).toBe(true);
+      expect(existsSync(sibling)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -402,11 +424,11 @@ describe("reapDeadEmptyWorkerShells (#1355)", () => {
     const root = scratch();
     try {
       const emptyWorker = join(root, "go-workers", "wEMPTYATT");
-      mkdirSync(join(emptyWorker, "12-a1"), { recursive: true });
+      mkdirSync(join(emptyWorker, "12"), { recursive: true });
       writeFileSync(join(emptyWorker, "worker.pid"), "corrupt");
 
       const preservedWorker = join(root, "scout-workers", "wPRESERVE");
-      const preservedAttempt = join(preservedWorker, "13-a1");
+      const preservedAttempt = join(preservedWorker, "13");
       mkdirSync(preservedAttempt, { recursive: true });
       writeFileSync(join(preservedAttempt, "agent.log.toonl"), "blocked evidence");
       writeFileSync(join(preservedWorker, "worker.pid"), DEAD_PID);
@@ -414,7 +436,7 @@ describe("reapDeadEmptyWorkerShells (#1355)", () => {
       const result = await reapDeadEmptyWorkerShells(root);
 
       expect(result.workerDirs).toEqual([emptyWorker]);
-      expect(result.emptyAttemptDirs).toEqual([join(emptyWorker, "12-a1")]);
+      expect(result.emptyAttemptDirs).toEqual([join(emptyWorker, "12")]);
       expect(existsSync(emptyWorker)).toBe(false);
       expect(readdirSync(preservedAttempt)).toEqual(["agent.log.toonl"]);
       expect(readFileSync(join(preservedWorker, "worker.pid"), "utf8")).toBe(DEAD_PID);
