@@ -18,7 +18,7 @@ describe("createCastleWorkerLaneBridge", () => {
     const root = await mkdtemp(join(tmpdir(), "castle-worker-lane-"));
     const redRoot = join(root, ".red");
     const workerId = "wAB12";
-    const attemptDir = join(redRoot, "tmp", "workers", workerId, "2064-a1");
+    const attemptDir = join(redRoot, "tmp", "workers", workerId, "2064");
     await mkdir(attemptDir, { recursive: true });
     initStateSync(join(attemptDir, "afk.state.toon"), {
       worker_id: workerId,
@@ -57,7 +57,6 @@ describe("createCastleWorkerLaneBridge", () => {
         kind: "worker.claimed",
         worker_id: workerId,
         issue: 2064,
-        attempt: 1,
       }),
     ]);
 
