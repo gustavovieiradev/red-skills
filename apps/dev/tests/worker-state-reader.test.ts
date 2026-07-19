@@ -177,8 +177,8 @@ describe("worker-state-reader", () => {
 
   it("readWorkerStates globs + tags every record, dropping unreadable ones", async () => {
     const root = await mkdtemp(join(tmpdir(), "wsr-many-"));
-    const dirA = join(root, "wA", "1-a1");
-    const dirB = join(root, "wB", "2-a1");
+    const dirA = join(root, "wA", "1");
+    const dirB = join(root, "wB", "2");
     const live = await writeState(dirA, {
       worker_id: "wA",
       pid: 1,
@@ -209,19 +209,19 @@ describe("worker-state-reader", () => {
   it("readAllWorkerStates unions every worker-lane namespace under tmp", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "wsr-union-"));
     // One live worker per lane: fleet, /go, and --scout.
-    await writeState(join(tmp, "workers", "wFLEET", "10-a1"), {
+    await writeState(join(tmp, "workers", "wFLEET", "10"), {
       worker_id: "wFLEET",
       pid: 1,
       origin: "afk",
       current: { number: 10, last_event_at: fresh },
     });
-    await writeState(join(tmp, "go-workers", "wGO", "20-a1"), {
+    await writeState(join(tmp, "go-workers", "wGO", "20"), {
       worker_id: "wGO",
       pid: 2,
       origin: "go",
       current: { number: 20, last_event_at: fresh },
     });
-    await writeState(join(tmp, "scout-workers", "wSCOUT", "30-a1"), {
+    await writeState(join(tmp, "scout-workers", "wSCOUT", "30"), {
       worker_id: "wSCOUT",
       pid: 3,
       origin: "scout",
@@ -238,7 +238,7 @@ describe("worker-state-reader", () => {
 
   it("readAllWorkerStates with only the fleet lane matches today's single-lane read", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "wsr-union-fleet-"));
-    await writeState(join(tmp, "workers", "wFLEET", "11-a1"), {
+    await writeState(join(tmp, "workers", "wFLEET", "11"), {
       worker_id: "wFLEET",
       pid: 1,
       current: { number: 11, last_event_at: fresh },
@@ -252,9 +252,9 @@ describe("worker-state-reader", () => {
 
   // Isolation fallback: worker.pid liveness when afk.state.toon.pid === 0
   it("isolation: live worker.pid + pid:0 state → quiet-but-live, issue derived from path", async () => {
-    // Path must look like {worker}/{N}-a{n}/afk.state.toon so issue derivation works.
+    // Path must look like {worker}/{N}/afk.state.toon so issue derivation works.
     const base = await mkdtemp(join(tmpdir(), "wsr-iso-live-"));
-    const attemptDir = join(base, "wISO", "1085-a1");
+    const attemptDir = join(base, "wISO", "1085");
     const path = await writeState(attemptDir, { pid: 0, current: {} });
     // No liveness lane (empty lane), workerPidContent = live pid, kill returns true.
     const rec = readWorkerState(path, {
@@ -267,7 +267,7 @@ describe("worker-state-reader", () => {
     expect(rec!.live).toBe(true);
     expect(rec!.active).toBe(false);
     expect(rec!.liveness).toBe("quiet-but-live");
-    // Issue number derived from the "1085-a1" attempt-dir basename.
+    // Issue number derived from the "1085" issue-dir basename.
     expect(rec!.state.current.number).toBe(1085);
     // Evaluator verdict carries the isolation-fallback reason.
     expect(rec!.livenessVerdict.status).toBe("alive");
@@ -278,7 +278,7 @@ describe("worker-state-reader", () => {
   // renders its real identity from the durable identity.json sidecar.
   it("isolation: hostPidLive + zeroed state → real worker_id/runner/origin/started_at from identity.json", async () => {
     const base = await mkdtemp(join(tmpdir(), "wsr-iso-identity-"));
-    const attemptDir = join(base, "wISO", "1181-a1");
+    const attemptDir = join(base, "wISO", "1181");
     // Fully zeroed host state (pre-sync isolation worker): pid 0, empty identity.
     const path = await writeState(attemptDir, { pid: 0, current: {} });
     const identity = JSON.stringify({
@@ -309,7 +309,7 @@ describe("worker-state-reader", () => {
   // The identity sidecar never overwrites a value the state file already carries.
   it("isolation: identity.json does not clobber a populated state field", async () => {
     const base = await mkdtemp(join(tmpdir(), "wsr-iso-nonclobber-"));
-    const attemptDir = join(base, "wISO", "1181-a1");
+    const attemptDir = join(base, "wISO", "1181");
     const path = await writeState(attemptDir, { pid: 0, worker_id: "wKEEP", current: {} });
     const identity = JSON.stringify({
       worker_id: "wIDENTITY",
@@ -331,7 +331,7 @@ describe("worker-state-reader", () => {
 
   it("isolation: dead worker.pid + pid:0 state → dead", async () => {
     const base = await mkdtemp(join(tmpdir(), "wsr-iso-dead-"));
-    const attemptDir = join(base, "wISO", "1085-a1");
+    const attemptDir = join(base, "wISO", "1085");
     const path = await writeState(attemptDir, { pid: 0, current: {} });
     // kill returns false → host pid is dead.
     const rec = readWorkerState(path, {
@@ -347,8 +347,8 @@ describe("worker-state-reader", () => {
   it("isolation: hostPidLive does not readmit a retained sibling attempt", async () => {
     const base = await mkdtemp(join(tmpdir(), "wsr-iso-sibling-"));
     const workerDir = join(base, "wISO");
-    const retainedDir = join(workerDir, "1775-a1");
-    const currentDir = join(workerDir, "1811-a1");
+    const retainedDir = join(workerDir, "1775");
+    const currentDir = join(workerDir, "1811");
     const retainedPath = await writeState(retainedDir, {
       worker_id: "wISO",
       pid: 0,
@@ -423,13 +423,13 @@ describe("worker-state-reader", () => {
     it("readWorkerState computes renderableLive consistently for stalled/live", async () => {
       const base = await mkdtemp(join(tmpdir(), "wsr-renderable-"));
       // Live: populated pid + fresh lane.
-      const livePath = await writeState(join(base, "wA", "5-a1"), {
+      const livePath = await writeState(join(base, "wA", "5"), {
         worker_id: "wA", pid: 4242, current: { number: 5, last_event_at: fresh },
       });
       const live = readWorkerState(livePath, { nowMs: NOW, laneRecencyMs: LANE_FRESH_MS, kill: () => true });
       expect(live!.renderableLive).toBe(true);
       // Stalled: pid 0, stale lane, no host pid → dead.
-      const deadPath = await writeState(join(base, "wB", "6-a1"), {
+      const deadPath = await writeState(join(base, "wB", "6"), {
         worker_id: "wB", pid: 0, current: { number: 6 },
       });
       const dead = readWorkerState(deadPath, { nowMs: NOW, laneRecencyMs: LANE_STALE_MS, kill: () => false });
