@@ -24,7 +24,7 @@ describe("tmp janitor runtime", () => {
     const tmp = join(root, ".red", "tmp");
     await mkdir(join(tmp, "scratch", "old"), { recursive: true });
     await mkdir(join(tmp, "work-old"), { recursive: true });
-    await mkdir(join(tmp, "workers", "wOLD", "1961-a1"), { recursive: true });
+    await mkdir(join(tmp, "workers", "wOLD", "1961"), { recursive: true });
     await writeFile(join(tmp, "afk-supervisor-slot-0.log"), "legacy slot log\n", "utf8");
     await writeFile(join(tmp, "workers", "wOLD", "worker.pid"), "999999999", "utf8");
     await utimes(join(tmp, "scratch", "old"), NOW - SCRATCH_TTL_S - 10, NOW - SCRATCH_TTL_S - 10);
@@ -48,7 +48,7 @@ describe("tmp janitor runtime", () => {
     const root = await tempRoot();
     const tmp = join(root, ".red", "tmp");
     const worker = join(tmp, "workers", "wLIVE");
-    await mkdir(join(worker, "1961-a1"), { recursive: true });
+    await mkdir(join(worker, "1961"), { recursive: true });
     await writeFile(join(worker, "worker.pid"), "999999999", "utf8");
 
     const report = await collectTmpJanitorReport(tmp, NOW, () => "CLOSED");
@@ -57,6 +57,6 @@ describe("tmp janitor runtime", () => {
     const applied = await applyTmpJanitorReport(tmp, report);
     expect(applied.staleWorkers).toEqual([]);
     expect(applied.protectedLiveWorkers).toEqual([worker]);
-    expect(await readdir(worker)).toEqual(["1961-a1", "worker.pid"]);
+    expect(await readdir(worker)).toEqual(["1961", "worker.pid"]);
   });
 });
