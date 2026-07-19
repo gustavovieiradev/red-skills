@@ -27,8 +27,8 @@ describe("worker paths", () => {
     expect(parseWorkerAttemptPath(`${path}/`)).toEqual({ worker: "wZ2R4", issue: 142, attempt: 1 });
   });
 
-  it("still reads retained legacy attempt-suffixed directories", () => {
-    expect(parseWorkerAttemptPath(".red/tmp/workers/wZ2R4/142-a3")).toEqual({ worker: "wZ2R4", issue: 142, attempt: 3 });
+  it("rejects retained legacy attempt-suffixed directories", () => {
+    expect(parseWorkerAttemptPath(".red/tmp/workers/wZ2R4/142-a3")).toBeNull();
   });
 
   it("rejects malformed identities instead of constructing ambiguous paths", () => {
@@ -38,7 +38,7 @@ describe("worker paths", () => {
   });
 
   it("returns canonical globs and pid paths", () => {
-    expect(issueAttemptsGlob(".red/tmp/", 42)).toBe(".red/tmp/workers/*/42*");
+    expect(issueAttemptsGlob(".red/tmp/", 42)).toBe(".red/tmp/workers/*/42");
     expect(workersGlob(".red/tmp/")).toBe(".red/tmp/workers/*");
     expect(workerDir(".red/tmp/", "wAAAA")).toBe(".red/tmp/workers/wAAAA");
     expect(workerPidFile(".red/tmp/", "wAAAA")).toBe(".red/tmp/workers/wAAAA/worker.pid");
@@ -66,7 +66,7 @@ describe("worker paths — /go namespace", () => {
     expect(path).toBe(".red/tmp/go-workers/wGO12/938");
     expect(parseWorkerAttemptPath(path)).toEqual({ worker: "wGO12", issue: 938, attempt: 1 });
     expect(workersGlob(".red/tmp/")).toBe(".red/tmp/go-workers/*");
-    expect(issueAttemptsGlob(".red/tmp/", 938)).toBe(".red/tmp/go-workers/*/938*");
+    expect(issueAttemptsGlob(".red/tmp/", 938)).toBe(".red/tmp/go-workers/*/938");
     expect(workerDir(".red/tmp/", "wGO12")).toBe(".red/tmp/go-workers/wGO12");
     expect(livePidsGlob(".red/tmp/")).toBe(".red/tmp/go-workers/*/worker.pid");
   });
