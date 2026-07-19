@@ -79,17 +79,17 @@ describe("recommendRetake", () => {
       branches: [{ name: "origin/codex/123-retake", remote: true }],
       worktrees: [],
       workerState: {
-        path: "/repo/.red/tmp/workers/wAAAA/123-a2/afk.state.toon",
-        attemptDir: "/repo/.red/tmp/workers/wAAAA/123-a2",
+        path: "/repo/.red/tmp/workers/wAAAA/123/afk.state.toon",
+        attemptDir: "/repo/.red/tmp/workers/wAAAA/123",
         issue: 123,
-        attempt: 2,
+        attempt: 1,
         phase: "terminal",
         outcome: "stalled",
         lastExitCode: 124,
       },
     })).toMatchObject({
       kind: "continue-state",
-      command: "cd /repo/.red/tmp/workers/wAAAA/123-a2",
+      command: "cd /repo/.red/tmp/workers/wAAAA/123",
     });
   });
 
@@ -169,17 +169,17 @@ describe("recommendRetake", () => {
       branches: [{ name: "origin/codex/123-retake", remote: true }],
       worktrees: [],
       workerState: {
-        path: "/repo/.red/tmp/workers/wAAAA/123-a2/afk.state.toon",
-        attemptDir: "/repo/.red/tmp/workers/wAAAA/123-a2",
+        path: "/repo/.red/tmp/workers/wAAAA/123/afk.state.toon",
+        attemptDir: "/repo/.red/tmp/workers/wAAAA/123",
         issue: 123,
-        attempt: 2,
+        attempt: 1,
         phase: "terminal",
         outcome: "stalled",
         lastExitCode: 124,
       },
     })).toMatchObject({
       operations: [],
-      nextCommand: "cd /repo/.red/tmp/workers/wAAAA/123-a2",
+      nextCommand: "cd /repo/.red/tmp/workers/wAAAA/123",
     });
   });
 
