@@ -296,9 +296,9 @@ export async function readEnvelopePosted(attemptDir: string): Promise<boolean> {
 
 /**
  * Enumerate orphaned attempt dirs under a workers root for boot's orphan
- * cleanup. Each `workers/<worker>/<issue>-a<n>` dir is stat'd for its age, and
- * its issue number is parsed from the basename (null when unparseable). The
- * caller pairs these with gh state via boot's `lookups.orphanState`.
+ * cleanup. Each `workers/<worker>/<issue>` dir is stat'd for its age, and its
+ * issue number is parsed from the basename (null when unparseable). The caller
+ * pairs these with gh state via boot's `lookups.orphanState`.
  */
 export async function listOrphanDirs(workersRoot: string, nowS: number): Promise<OrphanDir[]> {
   const out: OrphanDir[] = [];
@@ -325,7 +325,7 @@ export async function listOrphanDirs(workersRoot: string, nowS: number): Promise
     }
     for (const attempt of attempts) {
       const dir = join(workerPath, attempt);
-      const m = /^([1-9][0-9]*)-a[1-9][0-9]*$/.exec(attempt);
+      const m = /^([1-9][0-9]*)$/.exec(attempt);
       let ageS = 0;
       try {
         const st = await stat(dir);
@@ -568,7 +568,7 @@ export async function listLegacyWorkDirs(tmpDir: string): Promise<string[]> {
   return out;
 }
 
-/** Remove every attempt dir for a completed issue under a workers root. Returns
+/** Remove every worker issue dir for a completed issue under a workers root. Returns
  * the removed dir paths (completion_sweep_issue). */
 export async function completionSweep(workersRoot: string, issue: number): Promise<string[]> {
   const removed: string[] = [];
@@ -578,22 +578,24 @@ export async function completionSweep(workersRoot: string, issue: number): Promi
   } catch {
     return removed;
   }
-  const prefix = `${issue}-a`;
   for (const worker of workerDirs) {
     const workerPath = join(workersRoot, worker);
-    let attempts: string[];
+    let entries: string[];
     try {
-      attempts = await readdir(workerPath);
+      entries = await readdir(workerPath);
     } catch {
       continue;
     }
-    for (const attempt of attempts) {
-      if (attempt.startsWith(prefix)) {
-        const dir = join(workerPath, attempt);
-        await rm(dir, { recursive: true, force: true });
-        removed.push(dir);
-      }
+    if (!entries.includes(String(issue))) continue;
+    const dir = join(workerPath, String(issue));
+    try {
+      const st = await stat(dir);
+      if (!st.isDirectory()) continue;
+    } catch {
+      continue;
     }
+    await rm(dir, { recursive: true, force: true });
+    removed.push(dir);
   }
   return removed;
 }
