@@ -5,7 +5,7 @@ import type { WorkerStateRecord } from "../src/core/worker-state-reader.js";
 
 // issue #1219 PART 4: read-time liveness-gated teardown.
 //
-// A WorkerStateRecord fixture whose `path` encodes {worker}/{N}-a{n} so the
+// A WorkerStateRecord fixture whose `path` encodes {worker}/{N} so the
 // sweep can derive the attempt dir, worktree, and owning worker dir. Only the
 // fields reclaimDeadWorkers reads are populated.
 function record(
@@ -15,7 +15,7 @@ function record(
   renderableLive: boolean,
 ): WorkerStateRecord {
   return {
-    path: `${root}/.red/tmp/workers/${worker}/${issue}-a1/afk.state.toon`,
+    path: `${root}/.red/tmp/workers/${worker}/${issue}/afk.state.toon`,
     state: parseState({ worker_id: worker, current: { number: issue } }),
     live: renderableLive,
     active: renderableLive,
@@ -63,9 +63,9 @@ describe("reclaimDeadWorkers (issue #1219)", () => {
   it("reclaims a dead, non-preserved worker's worktree AND attempt dir", async () => {
     const { deps, removedWorktrees, removedDirs } = harness();
     const reclaimed = await reclaimDeadWorkers(ROOT, [record(ROOT, "wDEAD", 5, false)], "", deps);
-    expect(removedWorktrees).toEqual(["/r/.red/tmp/workers/wDEAD/5-a1/worktree"]);
-    expect(removedDirs).toEqual(["/r/.red/tmp/workers/wDEAD/5-a1"]);
-    expect(reclaimed).toEqual(["/r/.red/tmp/workers/wDEAD/5-a1"]);
+    expect(removedWorktrees).toEqual(["/r/.red/tmp/workers/wDEAD/5/worktree"]);
+    expect(removedDirs).toEqual(["/r/.red/tmp/workers/wDEAD/5"]);
+    expect(reclaimed).toEqual(["/r/.red/tmp/workers/wDEAD/5"]);
   });
 
   it("NEVER touches a live worker's dir (worker.pid alive)", async () => {
@@ -79,7 +79,7 @@ describe("reclaimDeadWorkers (issue #1219)", () => {
   it("removes ONLY the worktree of a dead but preserved worker (keeps the JSONL)", async () => {
     const { deps, removedWorktrees, removedDirs } = harness({ isPreserved: async () => true });
     const reclaimed = await reclaimDeadWorkers(ROOT, [record(ROOT, "wBLOCKED", 6, false)], "", deps);
-    expect(removedWorktrees).toEqual(["/r/.red/tmp/workers/wBLOCKED/6-a1/worktree"]);
+    expect(removedWorktrees).toEqual(["/r/.red/tmp/workers/wBLOCKED/6/worktree"]);
     expect(removedDirs).toEqual([]);
     expect(reclaimed).toEqual([]);
   });
@@ -97,14 +97,14 @@ describe("reclaimDeadWorkers (issue #1219)", () => {
       "",
       deps,
     );
-    expect(removedDirs).toEqual(["/r/.red/tmp/workers/wDEAD/6-a1"]);
-    expect(reclaimed).toEqual(["/r/.red/tmp/workers/wDEAD/6-a1"]);
+    expect(removedDirs).toEqual(["/r/.red/tmp/workers/wDEAD/6"]);
+    expect(reclaimed).toEqual(["/r/.red/tmp/workers/wDEAD/6"]);
   });
 
   it("skips the worktree removal when it does not exist, still reclaims the dir", async () => {
     const { deps, removedWorktrees, removedDirs } = harness({ exists: () => false });
     await reclaimDeadWorkers(ROOT, [record(ROOT, "wDEAD", 5, false)], "", deps);
     expect(removedWorktrees).toEqual([]);
-    expect(removedDirs).toEqual(["/r/.red/tmp/workers/wDEAD/5-a1"]);
+    expect(removedDirs).toEqual(["/r/.red/tmp/workers/wDEAD/5"]);
   });
 });
