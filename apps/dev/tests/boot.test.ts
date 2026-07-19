@@ -302,7 +302,7 @@ function options(over: Partial<BootOptions> = {}): BootOptions {
 }
 
 function attempt(issue: number, num: number, ageS: number, live = false): AttemptDir {
-  return { path: `/p/.red/tmp/workers/wAAA/${issue}-a${num}`, mtimeS: NOW - ageS, live };
+  return { path: `/p/.red/tmp/workers/wA${num}/${issue}`, mtimeS: NOW - ageS, live };
 }
 
 describe("runBoot precheck short-circuit", () => {
@@ -1091,15 +1091,15 @@ describe("runBoot attempt cap reclaims the right dirs", () => {
     ]);
     const r = await runBoot(deps, options({ attemptCap: { byIssue } }));
     // Deleted RED_AFK_ATTEMPT_* env is ignored: fixed defaults are ttl=14d, keep=5.
-    // a1 age-capped; survivors a2..a7 with keep=5 -> drop a2 (oldest by number).
+    // wA1 age-capped; survivors wA2..wA7 with keep=5 -> drop wA2 (oldest by mtime).
     expect(fsCalls.removeDir).toEqual([
-      "/p/.red/tmp/workers/wAAA/42-a1",
-      "/p/.red/tmp/workers/wAAA/42-a2",
+      "/p/.red/tmp/workers/wA1/42",
+      "/p/.red/tmp/workers/wA2/42",
     ]);
     expect(r.attemptCap).toEqual({
       reclaimed: [
-        "/p/.red/tmp/workers/wAAA/42-a1",
-        "/p/.red/tmp/workers/wAAA/42-a2",
+        "/p/.red/tmp/workers/wA1/42",
+        "/p/.red/tmp/workers/wA2/42",
       ],
     });
   });
@@ -1571,7 +1571,7 @@ describe("runBoot step ORDER", () => {
     const markers = [
       "fs.ensureDir:/p/.red/tmp", // bootstrap
       "fs.removeDir:/d/orphan", // orphan cleanup
-      "fs.removeDir:/p/.red/tmp/workers/wAAA/42-a1", // attempt cap
+      "fs.removeDir:/p/.red/tmp/workers/wA1/42", // attempt cap
       "git.deleteRemote:afk-attempts/wAAA/9-s", // snapshot cleanup
       "git.deleteRemote:afk/wAAA/9-r", // remote live cleanup
       "git.deleteLocal:afk/wAAA/9-l", // local live cleanup
