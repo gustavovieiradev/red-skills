@@ -99,15 +99,6 @@ export function isRenderableLive(
   return rec.livenessVerdict.status !== "stalled" && (rec.pidIdentityLive || rec.hostPidLive);
 }
 
-function attemptName(path: string): string {
-  return basename(dirname(path));
-}
-
-function attemptNumberFromPath(path: string): number {
-  const m = /^[1-9][0-9]*-a([1-9][0-9]*)$/.exec(attemptName(path));
-  return m ? Number(m[1]) : 0;
-}
-
 function attemptMtimeMs(path: string): number {
   try {
     return statSync(dirname(path)).mtimeMs;
@@ -132,14 +123,12 @@ function workerKey(rec: Pick<WorkerStateRecord, "path" | "state">): string {
 function compareWorkerAttempts(a: Pick<WorkerStateRecord, "path" | "state">, b: Pick<WorkerStateRecord, "path" | "state">): number {
   const started = attemptStartedMs(a) - attemptStartedMs(b);
   if (started !== 0) return started;
-  const attempt = attemptNumberFromPath(a.path) - attemptNumberFromPath(b.path);
-  if (attempt !== 0) return attempt;
   return a.path.localeCompare(b.path);
 }
 
 /** Collapse a batch of read records to the single current renderable attempt per
  * Worker. The current attempt is the newest started/mtime record for the worker,
- * with the numeric `aN` suffix as a stable tie-breaker. */
+ * with the path as a stable tie-breaker. */
 export function currentRenderableWorkerRecords(records: readonly WorkerStateRecord[]): WorkerStateRecord[] {
   const byWorker = new Map<string, WorkerStateRecord>();
   for (const rec of records) {
@@ -309,8 +298,8 @@ export function readWorkerState(path: string, opts: WorkerStateReadOpts = {}): W
   let finalVerdict = livenessVerdict;
   let hostPidLive = false;
   if (livenessVerdict.status === "stalled" && state.pid === 0 && isNewestAttemptDirForWorker(path)) {
-    // worker.pid lives one directory above the attempt dir:
-    // {workersRoot}/{workerId}/{N}-a{n}/afk.state.toon → {workersRoot}/{workerId}/worker.pid
+    // worker.pid lives one directory above the issue dir:
+    // {workersRoot}/{workerId}/{N}/afk.state.toon → {workersRoot}/{workerId}/worker.pid
     const workerPidPath = join(dirname(dirname(path)), "worker.pid");
     let hostPidText: string | null;
     if (opts.workerPidContent !== undefined) {
@@ -365,11 +354,11 @@ export function readWorkerState(path: string, opts: WorkerStateReadOpts = {}): W
             state.current.number = identity.number;
           }
         }
-        // Derive the issue number from the attempt-dir basename when neither the
+        // Derive the issue number from the issue-dir basename when neither the
         // state nor the identity sidecar carries a current.number (empty pre-sync).
         if (state.current.number === "" || state.current.number === undefined || state.current.number === null) {
           const attemptBasename = basename(dirname(path));
-          const m = /^([1-9][0-9]*)-a[1-9][0-9]*$/.exec(attemptBasename);
+          const m = /^([1-9][0-9]*)$/.exec(attemptBasename);
           if (m) state.current.number = Number(m[1]);
         }
       }
