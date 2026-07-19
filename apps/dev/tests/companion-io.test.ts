@@ -18,10 +18,10 @@ import type { GhContext } from "../src/runtime/gh.js";
 import type { ExecFn, ExecOutput } from "../src/runtime/exec.js";
 import type { WorkerStateRecord } from "../src/core/worker-state-reader.js";
 
-// A worker-state record whose path encodes (issue, attempt) for parseWorkerAttemptPath.
-function record(issue: number, attempt: number, current: Record<string, unknown>, live = true): WorkerStateRecord {
+// A worker-state record whose path encodes the bare issue for parseWorkerAttemptPath.
+function record(issue: number, _attempt: number, current: Record<string, unknown>, live = true): WorkerStateRecord {
   return {
-    path: `/r/.red/tmp/workers/host-w/${issue}-a${attempt}/afk.state.toon`,
+    path: `/r/.red/tmp/workers/host-w/${issue}/afk.state.toon`,
     state: parseState({ current: { number: issue, ...current } }),
     live,
     active: live,
@@ -200,7 +200,7 @@ describe("runCompanionPass (#921)", () => {
       workersRoot: "/r/.red/tmp/workers",
       ctx: gh.ctx,
       thresholds: T,
-      cap: 2,
+      cap: 1,
       readStates: async () => [record(7, 2, churn)],
     });
     expect(outcomes[0]?.disposition).toBe("escalated");
@@ -218,7 +218,7 @@ describe("runCompanionPass (#921)", () => {
       workersRoot: "/r/.red/tmp/workers",
       ctx: gh.ctx,
       thresholds: T,
-      cap: 2,
+      cap: 1,
       readStates: async () => [record(7, 2, churn)],
     });
     const labels = gh.writes.find((w) => w.kind === "editLabels");
