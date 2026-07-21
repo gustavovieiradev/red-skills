@@ -1,4 +1,5 @@
 import { z } from "zod/v3";
+import { fleetStatusContract, type FleetStatusOutput } from "./contracts.js";
 import type { CastleMcpTool } from "./tool.js";
 
 export interface FleetSelectorInput {
@@ -32,7 +33,7 @@ export interface FleetNameInput {
 
 export interface FleetDependencies {
   fleetList(): Promise<unknown>;
-  fleetStatus(input: FleetNameInput): Promise<unknown>;
+  fleetStatus(input: FleetNameInput): Promise<FleetStatusOutput>;
   fleetCreate(input: FleetCreateInput): Promise<unknown>;
   fleetEdit(input: FleetEditInput): Promise<unknown>;
   fleetStop(input: FleetNameInput): Promise<unknown>;
@@ -65,6 +66,7 @@ export function createFleetTools(deps: FleetDependencies): CastleMcpTool[] {
       description:
         "Return structured supervisor, slots, churn, and live-worker status for a named fleet.",
       inputSchema: { fleet: z.string().min(1).optional() },
+      outputContract: fleetStatusContract,
       invoke: ({ fleet }) =>
         deps.fleetStatus({ name: fleet as string | undefined }),
     },
