@@ -1,4 +1,12 @@
 import { z } from "zod/v3";
+import {
+  monitorContract,
+  queueStatusContract,
+  workerVitalsContract,
+  type MonitorOutput,
+  type QueueStatusOutput,
+  type WorkerVitalsOutput,
+} from "./contracts.js";
 import type { CastleMcpTool } from "./tool.js";
 
 export interface LogsInput {
@@ -15,11 +23,11 @@ export interface WorkerVitalsInput {
 
 export interface ObservabilityDependencies {
   logs(input: LogsInput): Promise<unknown>;
-  workerVitals(input: WorkerVitalsInput): Promise<unknown>;
+  workerVitals(input: WorkerVitalsInput): Promise<WorkerVitalsOutput>;
   dashboard(input: { periodDays: number }): Promise<unknown>;
-  monitor(): Promise<unknown>;
+  monitor(): Promise<MonitorOutput>;
   history(input: { limit?: number }): Promise<unknown>;
-  queueStatus(): Promise<unknown>;
+  queueStatus(): Promise<QueueStatusOutput>;
 }
 
 export function createObservabilityTools(
@@ -48,6 +56,7 @@ export function createObservabilityTools(
         live_only: z.boolean().default(true),
         fields: z.array(z.string().min(1)).optional(),
       },
+      outputContract: workerVitalsContract,
       invoke: (input) =>
         deps.workerVitals({
           live_only: (input.live_only ?? true) as boolean,
@@ -71,6 +80,7 @@ export function createObservabilityTools(
       description:
         "Return the current workers, history events, and fleet monitor inputs.",
       inputSchema: {},
+      outputContract: monitorContract,
       invoke: () => deps.monitor(),
     },
     {
@@ -90,6 +100,7 @@ export function createObservabilityTools(
       description:
         "Return ready-for-agent and ready-for-human queue candidates.",
       inputSchema: {},
+      outputContract: queueStatusContract,
       invoke: () => deps.queueStatus(),
     },
   ];
