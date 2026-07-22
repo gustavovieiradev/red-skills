@@ -61,6 +61,21 @@ export const fleetStatusOutputSchema = z.object({
       origin: z.string(),
     }),
   ),
+  /**
+   * Live workers this fleet does not own — a worker whose recorded fleet name
+   * differs, so a stale or foreign process is never silently counted as ours.
+   * `fleet` is null when the worker recorded no fleet name at all.
+   */
+  unattributed_workers: z.array(
+    z.object({
+      id: z.string(),
+      pid: z.number(),
+      issue: z.string(),
+      activity: z.string(),
+      origin: z.string(),
+      fleet: z.string().nullable(),
+    }),
+  ),
 });
 
 export type FleetStatusOutput = z.infer<typeof fleetStatusOutputSchema>;
