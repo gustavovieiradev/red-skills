@@ -29,9 +29,12 @@ import type {
   FleetCreateInput,
   FleetEditInput,
   FleetNameInput,
+  FleetStatusOutput,
   GateRunInput,
   LandBranchInput,
   LogsInput,
+  MonitorOutput,
+  QueueStatusOutput,
   RequeueToolInput,
   RespondToolInput,
   RetakeToolInput,
@@ -43,6 +46,7 @@ import type {
   WorkerRequestInput,
   WorkerSteerInput,
   WorkerStopInput,
+  WorkerVitalsOutput,
   WorktreeRemoveInput,
 } from "../../../packages/red-castle/src/mcp-server.js";
 import { listWaits as listRspWaits } from "../../rsp/src/wait/registry.js";
@@ -53,6 +57,8 @@ import {
   classifySupervisor,
   resolveSupervisorConfig,
 } from "./core/supervisor.js";
+import type { HitlCandidate } from "./core/hitl-selection.js";
+import type { IssueCandidate } from "./core/session.js";
 import { listCandidates, listHitlCandidates } from "./runtime/gh.js";
 import * as ghx from "./runtime/gh.js";
 import { isLivePid } from "./runtime/kill-tree.js";
@@ -721,7 +727,10 @@ function profileForCreate(input: FleetCreateInput): FleetProfile {
   };
 }
 
-async function fleetStatus(root: string, input: FleetNameInput) {
+async function fleetStatus(
+  root: string,
+  input: FleetNameInput,
+): Promise<FleetStatusOutput> {
   const paths = afkPaths(root, input.name);
   const [fleet, monitor, discovered] = await Promise.all([
     readFleetState(paths.fleetStatePath),
@@ -877,7 +886,7 @@ async function laneLogs(root: string, input: LogsInput) {
   return filtered.length <= limit ? filtered : filtered.slice(-limit);
 }
 
-async function workerVitals(root: string) {
+async function workerVitals(root: string): Promise<WorkerVitalsOutput> {
   const records = await readAllWorkerStates(afkPaths(root).tmpDir);
   return records.map(({ state, ...record }) => ({
     worker: {
@@ -917,6 +926,30 @@ async function workerVitals(root: string) {
     liveness: record.liveness,
     liveness_verdict: record.livenessVerdict,
   }));
+}
+
+/**
+ * The `queue_status` payload, built from the two candidate lists. Pure and
+ * exported so the declared output contract is round-trippable over fixture
+ * candidates — the GitHub reads stay in the dependency wiring above.
+ *
+ * The ready-for-agent bodies are dropped: the queue answer is "which issues",
+ * and a full body per candidate would dwarf the rest of the payload.
+ */
+export function buildQueueStatus(
+  readyForAgent: readonly IssueCandidate[],
+  readyForHuman: readonly HitlCandidate[],
+): QueueStatusOutput {
+  return {
+    ready_for_agent: readyForAgent.map(
+      ({ body: _body, ...candidate }) => candidate,
+    ),
+    ready_for_human: [...readyForHuman],
+    counts: {
+      ready_for_agent: readyForAgent.length,
+      ready_for_human: readyForHuman.length,
+    },
+  };
 }
 
 /** Every checkout under the disposable `.red/tmp/worktrees/<lane>/` lanes, in
@@ -989,16 +1022,7 @@ export function createDevAfkMcpDependencies(
         listCandidates(gh),
         listHitlCandidates(gh),
       ]);
-      return {
-        ready_for_agent: readyForAgent.map(
-          ({ body: _body, ...candidate }) => candidate,
-        ),
-        ready_for_human: readyForHuman,
-        counts: {
-          ready_for_agent: readyForAgent.length,
-          ready_for_human: readyForHuman.length,
-        },
-      };
+      return buildQueueStatus(readyForAgent, readyForHuman);
     },
     workerDispatch: (input) => {
       if (input.issue !== undefined) {
