@@ -32,6 +32,25 @@ const FLEET_STATUS: FleetStatusOutput = {
   live_workers: [
     { id: "worker-1", pid: 43, issue: "2305", activity: "impl", origin: "afk" },
   ],
+  unattributed_workers: [
+    {
+      id: "worker-2",
+      pid: 44,
+      issue: "2306",
+      activity: "impl",
+      origin: "afk",
+      fleet: "other",
+    },
+    // A worker that recorded no fleet name at all — exercises the nullable arm.
+    {
+      id: "worker-3",
+      pid: 45,
+      issue: "2307",
+      activity: "review",
+      origin: "go",
+      fleet: null,
+    },
+  ],
 };
 
 function tool(output: unknown): CastleMcpTool {
