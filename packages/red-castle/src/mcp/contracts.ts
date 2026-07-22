@@ -9,14 +9,26 @@ import type { CastleMcpTool } from "./tool.js";
  */
 export const CASTLE_MCP_CONTRACT_VERSION = "1.0.0";
 
-/** One tool's declared output shape plus the version that shape belongs to. */
+/**
+ * One tool's declared output shape plus the version that shape belongs to.
+ *
+ * `projection` covers the tools that let a caller narrow their own payload: it
+ * names the input field that requests the narrowing and the relaxed schema to
+ * validate against when it is used. Projection relaxes PRESENCE, never TYPE —
+ * a field the caller did ask for is still checked, so narrowing stays a
+ * supported call rather than a contract escape hatch.
+ */
 export interface CastleMcpOutputContract {
   version: string;
   schema: z.ZodTypeAny;
+  projection?: { input: string; schema: z.ZodTypeAny };
 }
 
-function contract(schema: z.ZodTypeAny): CastleMcpOutputContract {
-  return { version: CASTLE_MCP_CONTRACT_VERSION, schema };
+function contract(
+  schema: z.ZodTypeAny,
+  projection?: CastleMcpOutputContract["projection"],
+): CastleMcpOutputContract {
+  return { version: CASTLE_MCP_CONTRACT_VERSION, schema, projection };
 }
 
 // ---------------------------------------------------------------------------
@@ -116,29 +128,41 @@ const livenessVerdictSchema = z.object({
   reason: z.string(),
 });
 
-export const workerVitalsOutputSchema = z.array(
-  z.object({
-    worker: z.object({
-      id: z.string(),
-      pid: z.number(),
-      runner: z.string(),
-      origin: z.string(),
-      started_at: z.string(),
-      done: z.number(),
-      total: z.number(),
-      blocked: z.number(),
-      failed: z.number(),
-      current: workerVitalsCurrentSchema,
-    }),
-    live: z.boolean(),
-    active: z.boolean(),
-    renderable_live: z.boolean(),
-    liveness: z.enum(["active", "quiet-but-live", "dead"]),
-    liveness_verdict: livenessVerdictSchema,
+const workerVitalsRecordSchema = z.object({
+  worker: z.object({
+    id: z.string(),
+    pid: z.number(),
+    runner: z.string(),
+    origin: z.string(),
+    started_at: z.string(),
+    done: z.number(),
+    total: z.number(),
+    blocked: z.number(),
+    failed: z.number(),
+    current: workerVitalsCurrentSchema,
   }),
+  live: z.boolean(),
+  active: z.boolean(),
+  renderable_live: z.boolean(),
+  liveness: z.enum(["active", "quiet-but-live", "dead"]),
+  liveness_verdict: livenessVerdictSchema,
+});
+
+export const workerVitalsOutputSchema = z.array(workerVitalsRecordSchema);
+
+/**
+ * The shape a `fields`-projected `worker_vitals` call returns: the same records
+ * with only the requested top-level keys kept. Every key that IS present must
+ * still match its declared type.
+ */
+export const workerVitalsProjectedOutputSchema = z.array(
+  workerVitalsRecordSchema.partial(),
 );
 
 export type WorkerVitalsOutput = z.infer<typeof workerVitalsOutputSchema>;
+export type WorkerVitalsProjectedOutput = z.infer<
+  typeof workerVitalsProjectedOutputSchema
+>;
 
 // ---------------------------------------------------------------------------
 // monitor
@@ -225,9 +249,27 @@ export type QueueStatusOutput = z.infer<typeof queueStatusOutputSchema>;
 // ---------------------------------------------------------------------------
 
 export const fleetStatusContract = contract(fleetStatusOutputSchema);
-export const workerVitalsContract = contract(workerVitalsOutputSchema);
+export const workerVitalsContract = contract(workerVitalsOutputSchema, {
+  input: "fields",
+  schema: workerVitalsProjectedOutputSchema,
+});
 export const monitorContract = contract(monitorOutputSchema);
 export const queueStatusContract = contract(queueStatusOutputSchema);
+
+/**
+ * The schema this one call must satisfy — the relaxed projection schema when the
+ * caller asked for a non-empty narrowing, the full declared shape otherwise.
+ */
+function schemaFor(
+  declared: CastleMcpOutputContract,
+  input: Record<string, unknown>,
+): z.ZodTypeAny {
+  const { projection } = declared;
+  if (!projection) return declared.schema;
+  const requested = input[projection.input];
+  const narrowed = Array.isArray(requested) && requested.length > 0;
+  return narrowed ? projection.schema : declared.schema;
+}
 
 /**
  * Wrap every tool that declares an `outputContract` so its payload is validated
@@ -238,6 +280,9 @@ export const queueStatusContract = contract(queueStatusOutputSchema);
  * Validation NEVER rewrites the payload: unknown keys survive untouched, so the
  * wire surface stays byte-identical for existing consumers. This is why the
  * declared schemas are enforcement, not serialization.
+ *
+ * A call that requests the contract's `projection` input is checked against the
+ * relaxed schema instead, so caller-driven narrowing stays a supported call.
  */
 export function applyOutputContracts(tools: CastleMcpTool[]): CastleMcpTool[] {
   return tools.map((tool) => {
@@ -248,7 +293,7 @@ export function applyOutputContracts(tools: CastleMcpTool[]): CastleMcpTool[] {
       ...tool,
       invoke: async (input) => {
         const result = await realInvoke(input);
-        const parsed = declared.schema.safeParse(result);
+        const parsed = schemaFor(declared, input).safeParse(result);
         if (!parsed.success) {
           throw new Error(
             `${tool.name} output violates contract ${declared.version}: ${parsed.error.issues
