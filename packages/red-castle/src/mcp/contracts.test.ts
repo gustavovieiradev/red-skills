@@ -9,6 +9,7 @@ import {
   fleetStatusOutputSchema,
   monitorOutputSchema,
   queueStatusOutputSchema,
+  workerVitalsContract,
   workerVitalsOutputSchema,
   type FleetStatusOutput,
 } from "./contracts.js";
@@ -96,6 +97,43 @@ describe("observability output contracts", () => {
 
     await expect(wrapped!.invoke({})).rejects.toThrow(
       /fleet_status output violates contract 1\.0\.0: slots\.total/,
+    );
+  });
+
+  it("relaxes presence — never type — for a projected call", async () => {
+    const projected: CastleMcpTool = {
+      name: "worker_vitals",
+      title: "Read worker vitals",
+      description: "…",
+      inputSchema: {},
+      outputContract: workerVitalsContract,
+      invoke: async (input) =>
+        (input.fields as string[] | undefined)?.length
+          ? [{ live: true, liveness: "active" }]
+          : [],
+    };
+    const [wrapped] = applyOutputContracts([projected]);
+
+    await expect(
+      wrapped!.invoke({ fields: ["live", "liveness"] }),
+    ).resolves.toEqual([{ live: true, liveness: "active" }]);
+    // An empty projection is no projection: the full shape still applies.
+    await expect(wrapped!.invoke({ fields: [] })).resolves.toEqual([]);
+  });
+
+  it("still rejects a projected field carrying the wrong type", async () => {
+    const drifted: CastleMcpTool = {
+      name: "worker_vitals",
+      title: "Read worker vitals",
+      description: "…",
+      inputSchema: {},
+      outputContract: workerVitalsContract,
+      invoke: async () => [{ live: "yes" }],
+    };
+    const [wrapped] = applyOutputContracts([drifted]);
+
+    await expect(wrapped!.invoke({ fields: ["live"] })).rejects.toThrow(
+      /worker_vitals output violates contract 1\.0\.0: 0\.live/,
     );
   });
 
