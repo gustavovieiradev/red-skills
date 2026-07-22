@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createClaimTools, type ClaimDependencies } from "./mcp/claim.js";
+import { applyOutputContracts } from "./mcp/contracts.js";
 import { createFleetTools, type FleetDependencies } from "./mcp/fleet.js";
 import { createGateTools, type GateDependencies } from "./mcp/gate.js";
 import { createHygieneTools, type HygieneDependencies } from "./mcp/hygiene.js";
@@ -24,6 +25,20 @@ import {
 
 export type { CastleMcpTool } from "./mcp/tool.js";
 export type { DangerPosture } from "./mcp/posture.js";
+export {
+  CASTLE_MCP_CONTRACT_VERSION,
+  fleetStatusOutputSchema,
+  monitorOutputSchema,
+  queueStatusOutputSchema,
+  workerVitalsOutputSchema,
+} from "./mcp/contracts.js";
+export type {
+  CastleMcpOutputContract,
+  FleetStatusOutput,
+  MonitorOutput,
+  QueueStatusOutput,
+  WorkerVitalsOutput,
+} from "./mcp/contracts.js";
 export type {
   FleetSelectorInput,
   FleetCreateInput,
@@ -83,6 +98,9 @@ export interface CastleMcpDependencies
  *   - `"allow"` (default) — unchanged behavior.
  *   - `"confirm"` — dangerous tools require `confirmation: true` in the input.
  *   - `"deny"` — dangerous tools always return a structured refusal.
+ *
+ * Output contracts wrap BEFORE the posture gate, so a posture refusal — which
+ * is deliberately not the tool's declared payload — never trips validation.
  */
 export function createCastleMcpTools(
   deps: CastleMcpDependencies,
@@ -101,5 +119,5 @@ export function createCastleMcpTools(
     ...createWaitTools(deps),
     ...createReviewTools(deps),
   ];
-  return applyDangerPosture(tools, posture);
+  return applyDangerPosture(applyOutputContracts(tools), posture);
 }
