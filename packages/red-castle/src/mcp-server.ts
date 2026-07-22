@@ -31,6 +31,7 @@ export {
   monitorOutputSchema,
   queueStatusOutputSchema,
   workerVitalsOutputSchema,
+  workerVitalsProjectedOutputSchema,
 } from "./mcp/contracts.js";
 export type {
   CastleMcpOutputContract,
@@ -38,6 +39,7 @@ export type {
   MonitorOutput,
   QueueStatusOutput,
   WorkerVitalsOutput,
+  WorkerVitalsProjectedOutput,
 } from "./mcp/contracts.js";
 export type {
   FleetSelectorInput,
