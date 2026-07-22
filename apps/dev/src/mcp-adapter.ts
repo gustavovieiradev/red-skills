@@ -47,6 +47,7 @@ import type {
   WorkerSteerInput,
   WorkerStopInput,
   WorkerVitalsOutput,
+  WorkerVitalsProjectedOutput,
   WorktreeRemoveInput,
 } from "../../../packages/red-castle/src/mcp-server.js";
 import { listWaits as listRspWaits } from "../../rsp/src/wait/registry.js";
@@ -1073,12 +1074,13 @@ export function createDevAfkMcpDependencies(
     logs: (input) => laneLogs(root, input),
     workerVitals: async (input) => {
       const records = await workerVitals(root, { live_only: input.live_only });
-      // A `fields` projection deliberately narrows the declared shape, so the
-      // projected records re-enter the contract type by assertion.
+      if (!input.fields?.length) return records;
+      // A `fields` projection deliberately narrows the declared shape; the
+      // contract validates those calls against its relaxed projection schema.
       return projectFields(
         records as unknown as Array<Record<string, unknown>>,
         input.fields,
-      ) as WorkerVitalsOutput;
+      ) as WorkerVitalsProjectedOutput;
     },
     dashboard: ({ periodDays }) => collectDashboardReport(periodDays, root),
     monitor: () => collectMonitorInputs(root),
