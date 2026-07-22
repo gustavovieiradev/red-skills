@@ -151,15 +151,32 @@ describe("dev:afk observability output contracts", () => {
   it("builds a queue_status payload that satisfies the declared contract", () => {
     const queue = buildQueueStatus(
       [
-        { number: 2335, title: "E1", body: "the full issue body", labels: ["type:ticket"] },
+        {
+          number: 2335,
+          title: "E1",
+          body: "the full issue body",
+          labels: ["type:ticket"],
+        },
       ],
-      [{ number: 2334, title: "H3", labels: ["ready-for-human"], createdAt: null }],
+      [
+        {
+          number: 2334,
+          title: "H3",
+          labels: ["ready-for-human"],
+          createdAt: null,
+        },
+      ],
     );
 
     expect(queueStatusOutputSchema.parse(queue)).toEqual({
       ready_for_agent: [{ number: 2335, title: "E1", labels: ["type:ticket"] }],
       ready_for_human: [
-        { number: 2334, title: "H3", labels: ["ready-for-human"], createdAt: null },
+        {
+          number: 2334,
+          title: "H3",
+          labels: ["ready-for-human"],
+          createdAt: null,
+        },
       ],
       counts: { ready_for_agent: 1, ready_for_human: 1 },
     });
