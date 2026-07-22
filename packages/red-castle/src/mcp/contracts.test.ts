@@ -71,7 +71,12 @@ function tool(output: unknown): CastleMcpTool {
 describe("observability output contracts", () => {
   it("declares a versioned contract on every observability tool", () => {
     const tools = createCastleMcpTools({} as CastleMcpDependencies);
-    const contracted = ["fleet_status", "worker_vitals", "monitor", "queue_status"];
+    const contracted = [
+      "fleet_status",
+      "worker_vitals",
+      "monitor",
+      "queue_status",
+    ];
 
     for (const name of contracted) {
       const declared = tools.find((t) => t.name === name)?.outputContract;
@@ -157,7 +162,9 @@ describe("observability output contracts", () => {
       workerVitals: vi.fn(async () => []),
       monitor: vi.fn(async () => ({ workers: [], events: [], fleet: null })),
       queueStatus: vi.fn(async () => ({
-        ready_for_agent: [{ number: 2335, title: "E1", labels: ["type:ticket"] }],
+        ready_for_agent: [
+          { number: 2335, title: "E1", labels: ["type:ticket"] },
+        ],
         ready_for_human: [],
         counts: { ready_for_agent: 1, ready_for_human: 0 },
       })),
@@ -166,9 +173,17 @@ describe("observability output contracts", () => {
     const invoke = (name: string) =>
       tools.find((t) => t.name === name)!.invoke({});
 
-    expect(fleetStatusOutputSchema.safeParse(await invoke("fleet_status")).success).toBe(true);
-    expect(workerVitalsOutputSchema.safeParse(await invoke("worker_vitals")).success).toBe(true);
-    expect(monitorOutputSchema.safeParse(await invoke("monitor")).success).toBe(true);
-    expect(queueStatusOutputSchema.safeParse(await invoke("queue_status")).success).toBe(true);
+    expect(
+      fleetStatusOutputSchema.safeParse(await invoke("fleet_status")).success,
+    ).toBe(true);
+    expect(
+      workerVitalsOutputSchema.safeParse(await invoke("worker_vitals")).success,
+    ).toBe(true);
+    expect(monitorOutputSchema.safeParse(await invoke("monitor")).success).toBe(
+      true,
+    );
+    expect(
+      queueStatusOutputSchema.safeParse(await invoke("queue_status")).success,
+    ).toBe(true);
   });
 });
