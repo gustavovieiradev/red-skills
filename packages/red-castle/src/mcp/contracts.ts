@@ -297,7 +297,10 @@ export function applyOutputContracts(tools: CastleMcpTool[]): CastleMcpTool[] {
         if (!parsed.success) {
           throw new Error(
             `${tool.name} output violates contract ${declared.version}: ${parsed.error.issues
-              .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+              .map(
+                (issue) =>
+                  `${issue.path.join(".") || "<root>"}: ${issue.message}`,
+              )
               .join("; ")}`,
           );
         }
