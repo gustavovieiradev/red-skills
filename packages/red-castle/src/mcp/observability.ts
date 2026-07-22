@@ -6,6 +6,7 @@ import {
   type MonitorOutput,
   type QueueStatusOutput,
   type WorkerVitalsOutput,
+  type WorkerVitalsProjectedOutput,
 } from "./contracts.js";
 import type { CastleMcpTool } from "./tool.js";
 
@@ -23,7 +24,10 @@ export interface WorkerVitalsInput {
 
 export interface ObservabilityDependencies {
   logs(input: LogsInput): Promise<unknown>;
-  workerVitals(input: WorkerVitalsInput): Promise<WorkerVitalsOutput>;
+  /** Returns the projected shape when `input.fields` narrows the records. */
+  workerVitals(
+    input: WorkerVitalsInput,
+  ): Promise<WorkerVitalsOutput | WorkerVitalsProjectedOutput>;
   dashboard(input: { periodDays: number }): Promise<unknown>;
   monitor(): Promise<MonitorOutput>;
   history(input: { limit?: number }): Promise<unknown>;
