@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIVENESS_LANE_FILENAME } from "@reddb-io/red-castle";
 import {
+  createCastleMcpTools,
   fleetStatusOutputSchema,
   monitorOutputSchema,
   queueStatusOutputSchema,
@@ -111,7 +112,7 @@ describe("dev:afk observability output contracts", () => {
 
   it("builds a worker_vitals payload that satisfies the declared contract", async () => {
     const root = await fixtureRoot();
-    const vitals = await createDevAfkMcpDependencies(root).workerVitals();
+    const vitals = await createDevAfkMcpDependencies(root).workerVitals({});
 
     expect(vitals).toHaveLength(1);
     expect(workerVitalsOutputSchema.parse(vitals)[0]).toMatchObject({
@@ -133,6 +134,18 @@ describe("dev:afk observability output contracts", () => {
     expect(parsed.workers.map((worker) => worker.state.worker_id)).toEqual([
       "wHU5U",
     ]);
+  });
+
+  it("keeps a worker_vitals `fields` projection callable through the contract", async () => {
+    const root = await fixtureRoot();
+    const tools = createCastleMcpTools(createDevAfkMcpDependencies(root));
+    const workerVitals = tools.find((tool) => tool.name === "worker_vitals")!;
+
+    // A caller-requested projection is a deliberate narrowing of the declared
+    // shape — the contract must not turn that supported input into an error.
+    await expect(
+      workerVitals.invoke({ live_only: true, fields: ["live", "liveness"] }),
+    ).resolves.toEqual([{ live: true, liveness: "active" }]);
   });
 
   it("builds a queue_status payload that satisfies the declared contract", () => {
