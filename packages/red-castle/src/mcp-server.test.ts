@@ -31,6 +31,7 @@ function deps(): CastleMcpDependencies {
           origin: "afk",
         },
       ],
+      unattributed_workers: [],
     })),
     fleetCreate: vi.fn(async (input) => ({
       status: "launched",
